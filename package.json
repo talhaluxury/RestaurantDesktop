@@ -1,0 +1,33 @@
+{
+  "name": "restaurant-pos-desktop",
+  "productName": "Restaurant POS",
+  "version": "1.0.0",
+  "description": "Restaurant POS for Windows laptops - live orders, billing, menu, reports and slip printing.",
+  "main": "main.js",
+  "author": "Talha",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --x64 --publish never"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.talha.restaurantpos.desktop",
+    "productName": "Restaurant POS",
+    "files": ["main.js", "preload.js", "app/**/*", "build/icon.ico", "build/icon.png"],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Restaurant POS"
+    }
+  }
+}

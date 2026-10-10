@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Restaurant POS</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<div id="loginScreen" class="login hidden">
+  <div class="glass login-card">
+    <div class="logo">🍽️</div>
+    <h1>Restaurant POS</h1>
+    <p class="muted">Sign in with the same email and password as the mobile app.</p>
+    <input id="loginEmail" type="email" placeholder="Email" autocomplete="username" />
+    <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password" />
+    <div id="loginError" class="error"></div>
+    <button id="loginBtn" class="btn primary big" data-act="login">Login</button>
+  </div>
+</div>
+
+<div id="appShell" class="shell hidden">
+  <aside class="sidebar">
+    <div class="brand"><span class="brand-ico">🍽️</span><div><b id="brandName">Restaurant</b><small id="brandSub">POS</small></div></div>
+    <nav id="nav">
+      <button data-act="nav" data-view="orders" class="active">📋 Live Orders <span id="newBadge" class="badge hidden">0</span></button>
+      <button data-act="nav" data-view="pos">🧾 POS Billing</button>
+      <button data-act="nav" data-view="menu">🍔 Menu &amp; Prices</button>
+      <button data-act="nav" data-view="reports">📊 Sales Reports</button>
+      <button data-act="nav" data-view="settings">⚙️ Settings</button>
+    </nav>
+    <div class="side-foot"><span id="netDot" class="dot on"></span><span id="netText">Online</span></div>
+  </aside>
+  <main class="main">
+    <div id="alertBanner" class="alert-banner hidden"></div>
+    <section id="view-orders" class="view"></section>
+    <section id="view-pos" class="view hidden"></section>
+    <section id="view-menu" class="view hidden"></section>
+    <section id="view-reports" class="view hidden"></section>
+    <section id="view-settings" class="view hidden"></section>
+  </main>
+</div>
+
+<div id="modalBack" class="modal-back hidden"><div id="modal" class="glass modal"></div></div>
+<div id="toast" class="toast hidden"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
