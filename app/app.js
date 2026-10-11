@@ -1,9 +1,10 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
-  getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, onSnapshot, query, where, runTransaction
+  getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, onSnapshot, query, where, runTransaction, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import * as L from "./lib.js";
+import { MENU_SEED, CATEGORY_EMOJI } from "./menu-seed.js";
 
 // Same Firebase project as the mobile apps and the website.
 const firebaseConfig = {
@@ -26,19 +27,25 @@ const S = {
   uid: null, rid: null, email: '', restaurant: {}, categories: [], products: [], tables: [],
   orders: [], ordersLoaded: false, view: 'orders', ordersFilter: 'active', ordersSearch: '',
   cart: [], orderType: 'DINE_IN', tableId: '', customer: { name: '', phone: '', address: '' },
-  discount: 0, payMethod: 'CASH', received: '', posCat: 'ALL', posSearch: '',
+  discount: 0, posCat: 'ALL', posSearch: '',
   menuCat: 'ALL', menuSearch: '', reportOrders: [], reportPreset: 'today', alerts: [], unsubs: []
 };
-const cfg = Object.assign({ paper: '80', silent: false, printer: '', sound: true, autoPrint: true },
+const cfg = Object.assign({ paper: '80', silent: false, printer: '', sound: true, theme: 'dark' },
   JSON.parse(localStorage.getItem('cfg') || '{}'));
 const saveCfg = () => localStorage.setItem('cfg', JSON.stringify(cfg));
+function applyTheme() {
+  document.documentElement.setAttribute('data-theme', cfg.theme);
+  document.querySelectorAll('.theme-toggle button').forEach(b => b.classList.toggle('active', b.dataset.v === cfg.theme));
+}
+applyTheme();
+document.addEventListener('DOMContentLoaded', applyTheme);
 
 const cur = () => S.restaurant.currency || 'PKR';
 const MC = n => L.money(n, cur());
 const path = (...p) => ['restaurants', S.rid, ...p];
 const toast = (msg, ms = 2800) => { const t = $('toast'); t.textContent = msg; t.classList.remove('hidden'); clearTimeout(toast._t); toast._t = setTimeout(() => t.classList.add('hidden'), ms); };
 const openModal = html => { $('modal').innerHTML = html; $('modalBack').classList.remove('hidden'); };
-const closeModal = () => $('modalBack').classList.add('hidden');
+const closeModal = () => { $('modalBack').classList.add('hidden'); _activePaymentModal = null; };
 
 // ───────── sound + alerts ─────────
 let audioCtx = null, soundTimer = null, soundStart = 0;
@@ -79,6 +86,11 @@ function renderBanner() {
 }
 
 const typeLabel = t => ({ DINE_IN: 'Dine-in', TAKEAWAY: 'Takeaway', DELIVERY: 'Delivery' }[t] || t || '');
+function productImage(p) {
+  const cat = S.categories.find(c => c.id === p.categoryId);
+  const emoji = (cat && CATEGORY_EMOJI[cat.name]) || '🍽️';
+  return L.emojiImage(emoji);
+}
 
 // ───────── auth ─────────
 function showLogin() { $('appShell').classList.add('hidden'); $('loginScreen').classList.remove('hidden'); }
@@ -173,8 +185,10 @@ function renderOrders() {
   }
   const by = f => S.orders.filter(f).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
   const active = by(o => ['NEW', 'PREPARING', 'READY'].includes(o.status));
+  const pending = by(o => o.paymentStatus === 'UNPAID' && o.status !== 'CANCELLED');
   const filters = [
-    ['active', 'Active', active.length], ['completed', 'Completed', S.orders.filter(o => o.status === 'COMPLETED').length],
+    ['active', 'Active', active.length], ['pending', '💰 Pending Payment', pending.length],
+    ['completed', 'Completed', S.orders.filter(o => o.status === 'COMPLETED').length],
     ['cancelled', 'Cancelled', S.orders.filter(o => o.status === 'CANCELLED').length], ['all', 'All', S.orders.length]
   ];
   $('ofilters').innerHTML = filters.map(([k, n, c]) => `<span class="chip ${S.ordersFilter === k ? 'active' : ''}" data-act="ofilter" data-f="${k}">${n} (${c})</span>`).join('');
@@ -188,6 +202,9 @@ function renderOrders() {
       const list = active.filter(o => o.status === st && match(o));
       return `<div><div class="col-title">${title} (${list.length})</div>${list.map(orderCard).join('') || '<div class="muted small">No orders</div>'}</div>`;
     }).join('')}</div>`;
+  } else if (S.ordersFilter === 'pending') {
+    const list = pending.filter(match);
+    body.innerHTML = `<div class="grid">${list.map(orderCard).join('') || '<div class="muted">Nothing waiting for payment.</div>'}</div>`;
   } else {
     const st = { completed: 'COMPLETED', cancelled: 'CANCELLED' }[S.ordersFilter];
     const list = by(o => (!st || o.status === st) && match(o)).slice(0, 200);
@@ -212,15 +229,65 @@ function orderCard(o) {
     ${o.orderType === 'DELIVERY' && o.customerAddress ? `<div class="muted small">📍 ${esc(o.customerAddress)}</div>` : ''}
     ${o.riderStatus ? `<div style="margin-top:4px"><span class="pill blue">🏍️ ${esc(o.riderName || 'Rider')}: ${esc(RIDER_LABEL[o.riderStatus] || o.riderStatus)}</span></div>` : ''}
     <div class="items">${items}</div>
-    <div style="display:flex;justify-content:space-between"><span class="muted">${esc(o.paymentMethod || 'Unpaid')}</span><b style="color:var(--accent2);font-size:16px">${MC(o.total)}</b></div>
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <span>${o.paymentStatus === 'UNPAID' ? '<span class="pending-dot"></span><span style="color:var(--red);font-weight:700">Payment Pending</span>' : `<span class="muted">${esc(o.paymentMethod || '')}</span>`}</span>
+      <b style="color:var(--accent2);font-size:16px">${MC(o.total)}</b></div>
     <div class="actions">
       ${nxt ? `<button class="btn primary sm" data-act="adv" data-id="${o.id}" data-st="${nxt[0]}">${nxt[1]}</button>` : ''}
-      <button class="btn sm" data-act="print-order" data-id="${o.id}">🖨️ Slip</button>
+      ${o.paymentStatus === 'UNPAID'
+        ? `<button class="btn sm green" data-act="collect-pay" data-id="${o.id}">💰 Collect Payment</button>`
+        : `<button class="btn sm" data-act="print-order" data-id="${o.id}">🖨️ Slip</button>${o.status !== 'CANCELLED' ? `<button class="btn sm" data-act="edit-slip" data-id="${o.id}">✏️ Edit Slip</button>` : ''}`}
       ${loc ? `<button class="btn sm" data-act="map" data-lat="${loc.lat}" data-lng="${loc.lng}">📍 Customer</button>` : ''}
       ${live && ['NEW', 'PREPARING', 'READY'].includes(o.status) ? `<button class="btn sm" data-act="map" data-lat="${live.lat}" data-lng="${live.lng}">🏍️ Rider</button>` : ''}
       ${canCancel ? `<button class="btn sm danger" data-act="cancel-order" data-id="${o.id}">Cancel</button>` : ''}
     </div></div>`;
 }
+
+// ───────── Payment / print-preview modal (used for first payment AND later slip edits) ─────────
+function paymentModal(order) {
+  const isDelivery = order.orderType === 'DELIVERY';
+  openModal(`
+    <h3>${order.paymentStatus === 'UNPAID' ? 'Collect Payment' : 'Edit Slip'} - ${esc(order.orderNumber)}</h3>
+    <div class="pay-split">
+      <div>
+        <div class="muted small">${esc(order.customerName || '')} ${esc(order.customerPhone || '')}</div>
+        <label>Discount (amount)</label><input id="payDisc" type="number" min="0" value="${order.discount || 0}">
+        ${isDelivery ? `<label>Delivery charge</label><input id="payDeliv" type="number" min="0" value="${order.deliveryCharge || 0}">
+          <div class="chips" style="margin-top:6px"><span class="chip" data-qd="50">Rs 50</span><span class="chip" data-qd="100">Rs 100</span><span class="chip" data-qd="150">Rs 150</span></div>` : ''}
+        <label>Payment method</label>
+        <select id="payMethod"><option>CASH</option><option>CARD</option><option>EASYPAISA</option><option>JAZZCASH</option><option>BANK</option><option>OTHER</option></select>
+        <label>Amount received</label><input id="payRecv" type="number" min="0" value="${order.amountReceived || order.total || 0}">
+        <div id="payChangeRow" class="trow" style="margin-top:10px"></div>
+        <div id="payTotalsRow"></div>
+      </div>
+      <div><label>Slip preview</label><iframe id="slipFrame" class="slip-preview" style="width:100%;border:none"></iframe></div>
+    </div>
+    <div class="foot"><button class="btn" data-act="modal-close">Close</button>
+      <button class="btn" data-act="pay-save" data-id="${order.id}">Save (no print)</button>
+      <button class="btn primary" data-act="pay-print" data-id="${order.id}">🖨️ Print &amp; Save</button></div>`);
+
+  $('payMethod').value = order.paymentMethod || 'CASH';
+
+  function currentOrder() {
+    const disc = parseFloat($('payDisc').value) || 0;
+    const deliv = isDelivery ? (parseFloat($('payDeliv').value) || 0) : 0;
+    const t = L.totals(order.items, S.restaurant.taxPercent, S.restaurant.serviceChargePercent, disc, deliv);
+    const received = parseFloat($('payRecv').value) || 0;
+    return { ...order, discount: t.discount, deliveryCharge: t.deliveryCharge, tax: t.tax, serviceCharge: t.serviceCharge, total: t.total, paymentMethod: $('payMethod').value, amountReceived: received, changeDue: Math.max(0, received - t.total) };
+  }
+  function updatePreview() {
+    const o = currentOrder();
+    $('slipFrame').srcdoc = L.receiptHtml(o, { ...S.restaurant, currency: cur() }, cfg.paper);
+    const change = Math.max(0, o.amountReceived - o.total);
+    $('payChangeRow').innerHTML = `<span>Total: <b>${MC(o.total)}</b></span><span style="color:var(--green)">Change: ${MC(change)}</span>`;
+  }
+  ['payDisc', 'payDeliv', 'payMethod', 'payRecv'].forEach(id => { const el = $(id); if (el) el.addEventListener('input', updatePreview); });
+  document.querySelectorAll('#modal [data-qd]').forEach(c => c.addEventListener('click', () => { $('payDeliv').value = c.dataset.qd; updatePreview(); }));
+  updatePreview();
+
+  return { currentOrder };
+}
+let _activePaymentModal = null;
 
 // ───────── POS BILLING ─────────
 function buildPOS() {
@@ -237,25 +304,25 @@ function buildPOS() {
         <button class="btn sm" data-act="pos-type" data-t="DELIVERY">Delivery</button></div>
       <div id="tableRow"><label>Table</label><select id="ptable"></select></div>
       <div id="custRow"><div class="two"><div><label>Customer name</label><input id="cname"></div><div><label>Phone</label><input id="cphone"></div></div>
-        <div id="addrRow"><label>Delivery address</label><input id="caddr"></div></div>
+        <div id="addrRow"><label>Delivery address</label><input id="caddr">
+          <label>Delivery charge</label>
+          <div class="two" style="align-items:center">
+            <input id="pdeliv" type="number" min="0" placeholder="0">
+            <div class="chips"><span class="chip" data-act="quick-deliv" data-v="50">Rs 50</span><span class="chip" data-act="quick-deliv" data-v="100">Rs 100</span><span class="chip" data-act="quick-deliv" data-v="150">Rs 150</span></div>
+          </div></div></div>
       <div class="cart-lines" id="clines"></div>
-      <div class="two"><div><label>Discount (amount)</label><input id="pdisc" type="number" min="0" placeholder="0"></div>
-        <div><label>Payment</label><select id="ppay"><option>CASH</option><option>CARD</option><option>EASYPAISA</option><option>JAZZCASH</option><option>BANK</option><option>OTHER</option></select></div></div>
-      <div id="recvRow"><label>Amount received</label><input id="precv" type="number" min="0" placeholder="0"></div>
+      <label>Discount (amount)</label><input id="pdisc" type="number" min="0" placeholder="0">
       <div id="ptotals" style="margin-top:8px"></div>
-      <label style="display:flex;gap:8px;align-items:center"><input id="pprint" type="checkbox" style="width:auto"> Print slip after placing order</label>
-      <div class="two" style="margin-top:10px"><button class="btn" data-act="pos-clear">Clear</button><button class="btn primary" id="placeBtn" data-act="pos-place">Place Order</button></div>
+      <div class="muted small" style="margin-top:6px">Payment is collected after the order is sent to the kitchen - see <b>Pending Payment</b> in Live Orders.</div>
+      <div class="two" style="margin-top:10px"><button class="btn" data-act="pos-clear">Clear</button><button class="btn primary" id="placeBtn" data-act="pos-place">Send Order</button></div>
     </div></div>`;
   $('psearch').addEventListener('input', e => { S.posSearch = e.target.value.trim().toLowerCase(); renderPOSProducts(); });
   $('cname').addEventListener('input', e => S.customer.name = e.target.value);
   $('cphone').addEventListener('input', e => S.customer.phone = e.target.value);
   $('caddr').addEventListener('input', e => S.customer.address = e.target.value);
+  $('pdeliv').addEventListener('input', e => { S_delivery = parseFloat(e.target.value) || 0; renderCart(); });
   $('pdisc').addEventListener('input', e => { S.discount = parseFloat(e.target.value) || 0; renderCart(); });
-  $('ppay').addEventListener('change', e => { S.payMethod = e.target.value; renderCart(); });
-  $('precv').addEventListener('input', e => { S.received = e.target.value; renderCart(); });
   $('ptable').addEventListener('change', e => S.tableId = e.target.value);
-  $('pprint').checked = cfg.autoPrint;
-  $('pprint').addEventListener('change', e => { cfg.autoPrint = e.target.checked; saveCfg(); });
 }
 
 function renderPOSProducts() {
@@ -263,11 +330,12 @@ function renderPOSProducts() {
   $('pcats').innerHTML = cats.map(c => `<span class="chip ${S.posCat === c.id ? 'active' : ''}" data-act="pos-cat" data-id="${c.id}">${esc(c.name)}</span>`).join('');
   const list = S.products.filter(p => (S.posCat === 'ALL' || p.categoryId === S.posCat) && (!S.posSearch || (p.name || '').toLowerCase().includes(S.posSearch)));
   $('pgrid').innerHTML = list.map(p => `<div class="pcard ${p.available === false ? 'off' : ''}" data-act="pos-add" data-id="${p.id}">
-    ${p.imageUrl ? `<img src="${esc(p.imageUrl)}" loading="lazy" onerror="this.remove()">` : ''}<b>${esc(p.name)}</b><span>${MC(p.price)}</span>${p.available === false ? '<div class="muted small">Unavailable</div>' : ''}</div>`).join('')
+    <img src="${esc(p.imageUrl || productImage(p))}" loading="lazy"><b>${esc(p.name)}</b><span>${MC(p.price)}</span>${p.available === false ? '<div class="muted small">Unavailable</div>' : ''}</div>`).join('')
     || '<div class="muted">No items. Add them in Menu &amp; Prices.</div>';
 }
 
-function cartTotals() { return L.totals(S.cart, S.restaurant.taxPercent, S.restaurant.serviceChargePercent, S.discount); }
+let S_delivery = 0;
+function cartTotals() { return L.totals(S.cart, S.restaurant.taxPercent, S.restaurant.serviceChargePercent, S.discount, S.orderType === 'DELIVERY' ? S_delivery : 0); }
 
 function renderCart() {
   document.querySelectorAll('#ptype button').forEach(b => b.classList.toggle('primary', b.dataset.t === S.orderType));
@@ -283,14 +351,12 @@ function renderCart() {
     || '<div class="muted" style="padding:20px 0;text-align:center">Cart is empty. Tap an item to add.</div>';
   const t = cartTotals();
   const tp = S.restaurant.taxPercent, sp = S.restaurant.serviceChargePercent;
-  const change = S.payMethod === 'CASH' && S.received ? Math.max(0, (parseFloat(S.received) || 0) - t.total) : 0;
-  $('recvRow').classList.toggle('hidden', S.payMethod !== 'CASH');
   $('ptotals').innerHTML = `<div class="trow"><span>Subtotal</span><span>${MC(t.subtotal)}</span></div>
     ${t.discount ? `<div class="trow"><span>Discount</span><span>-${MC(t.discount)}</span></div>` : ''}
+    ${t.deliveryCharge ? `<div class="trow"><span>Delivery Charge</span><span>${MC(t.deliveryCharge)}</span></div>` : ''}
     ${tp > 0 ? `<div class="trow"><span>Tax (${tp}%)</span><span>${MC(t.tax)}</span></div>` : ''}
     ${sp > 0 ? `<div class="trow"><span>Service (${sp}%)</span><span>${MC(t.serviceCharge)}</span></div>` : ''}
-    <div class="trow total"><span>Total</span><span>${MC(t.total)}</span></div>
-    ${change ? `<div class="trow"><span>Change</span><span style="color:var(--green)">${MC(change)}</span></div>` : ''}`;
+    <div class="trow total"><span>Total</span><span>${MC(t.total)}</span></div>`;
   $('placeBtn').disabled = !S.cart.length;
 }
 
@@ -320,29 +386,27 @@ async function nextOrderNumber() {
 async function placeOrder() {
   if (!S.cart.length) return;
   if (S.orderType === 'DELIVERY' && !S.customer.address.trim()) { toast('Please enter the delivery address'); return; }
-  const btn = $('placeBtn'); btn.disabled = true; btn.textContent = 'Placing...';
+  const btn = $('placeBtn'); btn.disabled = true; btn.textContent = 'Sending...';
   try {
     const t = cartTotals();
     const table = S.tables.find(x => x.id === S.tableId);
     const orderNumber = await nextOrderNumber();
-    const received = S.payMethod === 'CASH' ? (parseFloat(S.received) || t.total) : t.total;
     const data = {
       orderNumber,
       items: S.cart.map(l => ({ productId: l.productId, name: l.name, variantName: l.variantName, addOnNames: l.addOnNames, unitPrice: l.unitPrice, quantity: l.quantity, lineTotal: l.unitPrice * l.quantity })),
       orderType: S.orderType, tableId: S.orderType === 'DINE_IN' && table ? table.id : null, tableLabel: S.orderType === 'DINE_IN' && table ? table.label : null,
       customerName: S.customer.name.trim(), customerPhone: S.customer.phone.trim(), customerAddress: S.orderType === 'DELIVERY' ? S.customer.address.trim() : '',
-      subtotal: t.subtotal, discount: t.discount, tax: t.tax, serviceCharge: t.serviceCharge, total: t.total,
-      paymentMethod: S.payMethod, amountReceived: received, changeDue: Math.max(0, received - t.total),
+      subtotal: t.subtotal, discount: t.discount, deliveryCharge: t.deliveryCharge, tax: t.tax, serviceCharge: t.serviceCharge, total: t.total,
+      paymentMethod: null, amountReceived: 0, changeDue: 0, paymentStatus: 'UNPAID',
       status: 'NEW', cashierName: (S.email || 'Laptop').split('@')[0], createdAt: Date.now()
     };
     const ref = doc(collection(db, ...path('orders')));
     await setDoc(ref, data);
-    toast('Order ' + orderNumber + ' placed');
-    if (cfg.autoPrint) printOrder({ id: ref.id, ...data });
-    S.cart = []; S.discount = 0; S.received = ''; S.customer = { name: '', phone: '', address: '' };
-    ['pdisc', 'precv', 'cname', 'cphone', 'caddr'].forEach(id => $(id).value = '');
+    toast('Order ' + orderNumber + ' sent to kitchen - pending payment');
+    S.cart = []; S.discount = 0; S_delivery = 0; S.customer = { name: '', phone: '', address: '' };
+    ['pdisc', 'pdeliv', 'cname', 'cphone', 'caddr'].forEach(id => $(id) && ($(id).value = ''));
   } catch (e) { toast('Could not place order: ' + e.message, 5000); }
-  btn.textContent = 'Place Order'; renderCart();
+  btn.textContent = 'Send Order'; renderCart();
 }
 
 // ───────── MENU ─────────
@@ -364,7 +428,7 @@ function renderMenu() {
   const list = S.products.filter(p => (S.menuCat === 'ALL' || p.categoryId === S.menuCat) && (!S.menuSearch || (p.name || '').toLowerCase().includes(S.menuSearch)));
   const catName = id => (S.categories.find(c => c.id === id) || {}).name || '-';
   $('mtable').innerHTML = `<table><tr><th>Item</th><th>Category</th><th>Price (${esc(cur())})</th><th>Available</th><th></th></tr>
-    ${list.map(p => `<tr><td><b>${esc(p.name)}</b>${p.featured ? ' ⭐' : ''}</td><td>${esc(catName(p.categoryId))}</td>
+    ${list.map(p => `<tr><td style="display:flex;align-items:center;gap:8px"><img src="${esc(p.imageUrl || productImage(p))}" style="width:34px;height:34px;border-radius:8px;object-fit:cover"><b>${esc(p.name)}</b>${p.featured ? ' ⭐' : ''}</td><td>${esc(catName(p.categoryId))}</td>
       <td><input class="pricein" data-id="${p.id}" type="number" min="0" value="${Number(p.price) || 0}" style="width:110px;padding:7px 10px"></td>
       <td><div class="toggle ${p.available !== false ? 'on' : ''}" data-act="prod-toggle" data-id="${p.id}"></div></td>
       <td class="right"><button class="btn sm" data-act="prod-edit" data-id="${p.id}">Edit</button> <button class="btn sm danger" data-act="prod-del" data-id="${p.id}">Delete</button></td></tr>`).join('')
@@ -386,7 +450,7 @@ function productModal(p) {
     <div class="two"><div><label>Category</label><select id="pCat"><option value="">- none -</option>${S.categories.map(c => `<option value="${c.id}" ${c.id === p.categoryId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
       <div><label>Tax % (item)</label><input id="pTax" type="number" value="${p.taxPercent || 0}"></div></div>
     <label>Description</label><textarea id="pDesc" style="min-height:52px">${esc(p.description || '')}</textarea>
-    <label>Image link (optional)</label><input id="pImg" value="${esc(p.imageUrl || '')}" placeholder="https://...">
+    <label>Image link (optional - a themed icon is used automatically if left blank)</label><input id="pImg" value="${esc(p.imageUrl || '')}" placeholder="https://...">
     <label>Sizes / variants (one per line: Name, extra price)</label><textarea id="pVars" placeholder="Large, 150">${esc(L.variantsToText(p.variants))}</textarea>
     <label>Add-ons (one per line: Name, price)</label><textarea id="pAdds" placeholder="Extra cheese, 50">${esc(L.addOnsToText(p.addOns))}</textarea>
     <div class="two"><label style="display:flex;gap:8px;align-items:center;color:var(--tx)"><input id="pAvail" type="checkbox" style="width:auto" ${p.available !== false ? 'checked' : ''}> Available</label>
@@ -449,7 +513,13 @@ async function renderSettings() {
     <div class="glass card-pad"><h3>New order alert</h3>
       <label style="display:flex;gap:8px;align-items:center;color:var(--tx)"><input id="cfgSound" type="checkbox" style="width:auto" ${cfg.sound ? 'checked' : ''}> Play sound when a new order arrives</label>
       <div class="foot" style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px"><button class="btn" data-act="test-sound">Test sound</button><button class="btn primary" data-act="save-sound">Save</button></div></div>
+    <div class="glass card-pad"><h3>Starter menu</h3>
+      <p class="muted small">One-time import of Malik Taste Point's full menu (${MENU_SEED.length} items across ${new Set(MENU_SEED.map(m => m.cat)).size} categories) with prices and sizes, so you don't have to type it all in by hand. Safe to run more than once - it skips items that already exist by name. A few prices that weren't clearly printed were estimated and are worth double-checking afterward (Water Bottle, Cold Drink 345ml, Half Chargha, Flavour Pasta variants).</p>
+      <div class="foot" style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn primary" data-act="import-menu">Import Full Menu</button></div></div>
+    <div class="glass card-pad"><h3>Appearance</h3><p class="muted small">Theme can also be switched from the bottom of the sidebar.</p>
+      <div class="theme-toggle"><button data-act="theme" data-v="dark">🌙 Dark</button><button data-act="theme" data-v="light">☀️ Light</button></div></div>
     <div class="glass card-pad"><h3>Account</h3><p class="muted">Signed in as ${esc(S.email)}</p><button class="btn danger" data-act="logout">Logout</button></div>`;
+  document.querySelectorAll('#view-settings .theme-toggle button').forEach(b => b.classList.toggle('active', b.dataset.v === cfg.theme));
   if (window.desktop) {
     const printers = await window.desktop.getPrinters();
     const sel = $('cfgPrinter');
@@ -474,9 +544,31 @@ const ACTS = {
   async adv(el) { await updateDoc(doc(db, ...path('orders', el.dataset.id)), { status: el.dataset.st, ...(el.dataset.st === 'COMPLETED' ? { completedAt: Date.now() } : {}) }); },
   async 'cancel-order'(el) { if (confirm('Cancel this order?')) await updateDoc(doc(db, ...path('orders', el.dataset.id)), { status: 'CANCELLED' }); },
   'print-order'(el) { const o = orderById(el.dataset.id); if (o) printOrder(o); },
+  'collect-pay'(el) { const o = orderById(el.dataset.id); if (o) _activePaymentModal = paymentModal(o); },
+  'edit-slip'(el) { const o = orderById(el.dataset.id); if (o) _activePaymentModal = paymentModal(o); },
+  async 'pay-save'(el) {
+    if (!_activePaymentModal) return;
+    const o = _activePaymentModal.currentOrder();
+    await updateDoc(doc(db, ...path('orders', el.dataset.id)), {
+      discount: o.discount, deliveryCharge: o.deliveryCharge, tax: o.tax, serviceCharge: o.serviceCharge, total: o.total,
+      paymentMethod: o.paymentMethod, amountReceived: o.amountReceived, changeDue: o.changeDue, paymentStatus: 'PAID'
+    });
+    closeModal(); toast('Saved');
+  },
+  async 'pay-print'(el) {
+    if (!_activePaymentModal) return;
+    const o = _activePaymentModal.currentOrder();
+    await updateDoc(doc(db, ...path('orders', el.dataset.id)), {
+      discount: o.discount, deliveryCharge: o.deliveryCharge, tax: o.tax, serviceCharge: o.serviceCharge, total: o.total,
+      paymentMethod: o.paymentMethod, amountReceived: o.amountReceived, changeDue: o.changeDue, paymentStatus: 'PAID'
+    });
+    await printOrder(o);
+    closeModal(); toast('Paid and printed');
+  },
   map(el) { const u = `https://www.google.com/maps?q=${el.dataset.lat},${el.dataset.lng}`; window.desktop ? window.desktop.openExternal(u) : window.open(u, '_blank'); },
   'pos-cat'(el) { S.posCat = el.dataset.id; renderPOSProducts(); },
-  'pos-type'(el) { S.orderType = el.dataset.t; renderCart(); },
+  'pos-type'(el) { S.orderType = el.dataset.t; if (el.dataset.t !== 'DELIVERY') { S_delivery = 0; $('pdeliv').value = ''; } renderCart(); },
+  'quick-deliv'(el) { S_delivery = parseFloat(el.dataset.v) || 0; $('pdeliv').value = S_delivery; renderCart(); },
   'pos-add'(el) {
     const p = S.products.find(x => x.id === el.dataset.id); if (!p) return;
     if (p.available === false) { toast('This item is marked unavailable'); return; }
@@ -492,7 +584,7 @@ const ACTS = {
   'cart-inc'(el) { const l = S.cart.find(x => x.key === el.dataset.key); if (l) { l.quantity++; renderCart(); } },
   'cart-dec'(el) { const l = S.cart.find(x => x.key === el.dataset.key); if (l) { l.quantity--; if (l.quantity <= 0) S.cart = S.cart.filter(x => x !== l); renderCart(); } },
   'cart-del'(el) { S.cart = S.cart.filter(x => x.key !== el.dataset.key); renderCart(); },
-  'pos-clear'() { S.cart = []; S.discount = 0; S.received = ''; ['pdisc', 'precv'].forEach(id => $(id).value = ''); renderCart(); },
+  'pos-clear'() { S.cart = []; S.discount = 0; S_delivery = 0; ['pdisc', 'pdeliv'].forEach(id => $(id) && ($(id).value = '')); renderCart(); },
   'pos-place'() { return placeOrder(); },
   'modal-close'() { closeModal(); },
   'menu-cat'(el) { S.menuCat = el.dataset.id; renderMenu(); },
@@ -548,8 +640,40 @@ const ACTS = {
     printOrder({ orderNumber: '#TEST', createdAt: Date.now(), orderType: 'DINE_IN', items: [{ quantity: 1, name: 'Test item', lineTotal: 100 }], subtotal: 100, total: 100, paymentMethod: 'CASH' });
   },
   'save-sound'() { cfg.sound = $('cfgSound').checked; saveCfg(); toast('Saved'); },
+  async 'import-menu'(el) {
+    if (!confirm(`Import ${MENU_SEED.length} menu items now? This only adds items that don't already exist (matched by name).`)) return;
+    el.disabled = true; el.textContent = 'Importing...';
+    try {
+      const catIds = {};
+      let sort = S.categories.length;
+      for (const name of [...new Set(MENU_SEED.map(m => m.cat))]) {
+        const existing = S.categories.find(c => c.name === name);
+        if (existing) { catIds[name] = existing.id; continue; }
+        const ref = doc(collection(db, ...path('categories')));
+        await setDoc(ref, { name, sortOrder: sort++ });
+        catIds[name] = ref.id;
+      }
+      const existingNames = new Set(S.products.map(p => p.name));
+      let batch = writeBatch(db), n = 0, added = 0;
+      for (const item of MENU_SEED) {
+        if (existingNames.has(item.name)) continue;
+        const ref = doc(collection(db, ...path('products')));
+        batch.set(ref, {
+          name: item.name, description: item.description || '', price: item.price, costPrice: 0,
+          imageUrl: '', categoryId: catIds[item.cat], sku: '', available: true, featured: !!item.featured,
+          taxPercent: 0, variants: item.variants || [], addOns: []
+        });
+        n++; added++;
+        if (n >= 400) { await batch.commit(); batch = writeBatch(db); n = 0; }
+      }
+      if (n > 0) await batch.commit();
+      toast(added > 0 ? `Imported ${added} new items` : 'Everything was already imported');
+    } catch (e) { toast('Import failed: ' + e.message, 5000); }
+    el.disabled = false; el.textContent = 'Import Full Menu';
+  },
   'test-sound'() { const s = cfg.sound; cfg.sound = true; beep(); cfg.sound = s; },
-  async logout() { if (confirm('Logout?')) { ackAlerts(); await signOut(auth); } }
+  async logout() { if (confirm('Logout?')) { ackAlerts(); await signOut(auth); } },
+  theme(el) { cfg.theme = el.dataset.v; saveCfg(); applyTheme(); }
 };
 
 document.addEventListener('click', async e => {

@@ -26,13 +26,14 @@ export function buildLine(product, variant, addOns, qty = 1) {
   };
 }
 
-export function totals(cart, taxPct, svcPct, discount) {
+export function totals(cart, taxPct, svcPct, discount, deliveryCharge = 0) {
   const subtotal = cart.reduce((s, l) => s + l.unitPrice * l.quantity, 0);
   const tax = subtotal * ((Number(taxPct) || 0) / 100);
   const serviceCharge = subtotal * ((Number(svcPct) || 0) / 100);
   const disc = Math.max(0, Number(discount) || 0);
-  const total = Math.max(0, subtotal - disc + tax + serviceCharge);
-  return { subtotal, tax, serviceCharge, discount: disc, total };
+  const delivery = Math.max(0, Number(deliveryCharge) || 0);
+  const total = Math.max(0, subtotal - disc + tax + serviceCharge + delivery);
+  return { subtotal, tax, serviceCharge, discount: disc, deliveryCharge: delivery, total };
 }
 
 // "Large, 150" or "Large, +150" -> {name:'Large', priceDelta:150}; one per line
@@ -102,10 +103,10 @@ function csvCell(v) {
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 export function ordersToCsv(orders) {
-  const head = ['Order', 'Date', 'Type', 'Status', 'Customer', 'Phone', 'Items', 'Subtotal', 'Discount', 'Tax', 'Service', 'Total', 'Payment', 'Cashier'];
+  const head = ['Order', 'Date', 'Type', 'Status', 'Payment Status', 'Customer', 'Phone', 'Items', 'Subtotal', 'Discount', 'Delivery Charge', 'Tax', 'Service', 'Total', 'Payment', 'Cashier'];
   const rows = orders.slice().sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(o => [
-    o.orderNumber, new Date(o.createdAt || 0).toLocaleString(), o.orderType, o.status, o.customerName, o.customerPhone,
-    (o.items || []).map(i => `${i.quantity}x ${i.name}`).join('; '), o.subtotal, o.discount, o.tax, o.serviceCharge, o.total,
+    o.orderNumber, new Date(o.createdAt || 0).toLocaleString(), o.orderType, o.status, o.paymentStatus === 'UNPAID' ? 'UNPAID' : 'PAID', o.customerName, o.customerPhone,
+    (o.items || []).map(i => `${i.quantity}x ${i.name}`).join('; '), o.subtotal, o.discount, o.deliveryCharge || 0, o.tax, o.serviceCharge, o.total,
     o.paymentMethod || '', o.cashierName
   ].map(csvCell).join(','));
   return '\ufeff' + [head.join(','), ...rows].join('\n');
@@ -121,6 +122,7 @@ export function receiptHtml(o, r, paper = '80') {
       (extra ? `<div class="sub">${esc(extra)}</div>` : '');
   }).join('');
   const line = (label, val) => Number(val) ? `<div class="row"><span>${label}</span><span>${m(val)}</span></div>` : '';
+  const payLabel = o.paymentStatus === 'UNPAID' ? 'UNPAID' : (o.paymentMethod || '');
   const typeLabel = { DINE_IN: 'Dine-in', TAKEAWAY: 'Takeaway', DELIVERY: 'Delivery' }[o.orderType] || o.orderType || '';
   return `<!doctype html><html><head><meta charset="utf-8"><style>
 @page{size:${w} auto;margin:0}
@@ -138,10 +140,32 @@ ${o.customerName ? `<div class="row"><span>Customer</span><span>${esc(o.customer
 ${o.customerPhone ? `<div class="row"><span>Phone</span><span>${esc(o.customerPhone)}</span></div>` : ''}
 ${o.orderType === 'DELIVERY' && o.customerAddress ? `<div>${esc(o.customerAddress)}</div>` : ''}
 <div class="hr"></div>${items}<div class="hr"></div>
-${line('Subtotal', o.subtotal)}${line('Discount', -Math.abs(o.discount || 0))}${line('Tax', o.tax)}${line('Service', o.serviceCharge)}
+${line('Subtotal', o.subtotal)}${line('Discount', -Math.abs(o.discount || 0))}${line('Delivery Charge', o.deliveryCharge)}${line('Tax', o.tax)}${line('Service', o.serviceCharge)}
 <div class="row tot"><span>TOTAL</span><span>${esc(cur)} ${m(o.total)}</span></div>
-${o.paymentMethod ? `<div class="row"><span>Paid by</span><span>${esc(o.paymentMethod)}</span></div>` : ''}
+${payLabel ? `<div class="row"><span>${o.paymentStatus === 'UNPAID' ? 'Status' : 'Paid by'}</span><span>${esc(payLabel)}</span></div>` : ''}
 ${Number(o.amountReceived) ? `<div class="row"><span>Received</span><span>${m(o.amountReceived)}</span></div><div class="row"><span>Change</span><span>${m(o.changeDue)}</span></div>` : ''}
 <div class="hr"></div><div class="c">${esc(r.receiptFooter || 'Thank You! Visit Again')}</div>
 </body></html>`;
+}
+
+
+// Themed placeholder "photo" for a menu item when it has no real image link yet -
+// a nice icon card in the category's colour, rendered as a data: URI (no network needed,
+// never breaks). Real photos can always be added later via Menu & Prices > Edit > Image link.
+const EMOJI_BG = {
+  '\ud83c\udf89': ['#7C3AED', '#C026D3'], '\ud83c\udf5f': ['#F59E0B', '#DC2626'], '\u2b50': ['#FFD166', '#FF9D2E'],
+  '\ud83c\udf54': ['#F59E0B', '#B45309'], '\ud83c\udf57': ['#D97706', '#92400E'], '\ud83c\udf2f': ['#EA580C', '#9A3412'],
+  '\ud83e\udd6a': ['#DC2626', '#7F1D1D'], '\ud83c\udf56': ['#B91C1C', '#450A0A'], '\ud83c\udf62': ['#F97316', '#7C2D12'],
+  '\ud83c\udf55': ['#DC2626', '#991B1B'], '\ud83c\udf5d': ['#EAB308', '#854D0E'], '\ud83e\udd58': ['#CA8A04', '#78350F'],
+  '\ud83c\udf72': ['#B45309', '#78350F'], '\ud83e\udd64': ['#0EA5E9', '#0369A1']
+};
+export function emojiImage(emoji) {
+  const [c1, c2] = EMOJI_BG[emoji] || ['#FF9D2E', '#B45309'];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="220">
+    <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="${c1}"/><stop offset="1" stop-color="${c2}"/></linearGradient></defs>
+    <rect width="300" height="220" rx="18" fill="url(#g)"/>
+    <text x="150" y="132" font-size="88" text-anchor="middle" dominant-baseline="middle">${emoji}</text>
+  </svg>`;
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
 }
