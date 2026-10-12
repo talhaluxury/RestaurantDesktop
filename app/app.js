@@ -97,12 +97,35 @@ function showLogin() { $('appShell').classList.add('hidden'); $('loginScreen').c
 function showApp() { $('loginScreen').classList.add('hidden'); $('appShell').classList.remove('hidden'); }
 function loginError(m) { $('loginError').textContent = m || ''; }
 
+let licenseUnsub = null;
+
 onAuthStateChanged(auth, async user => {
-  if (!user) { stopListeners(); showLogin(); return; }
+  if (!user) { stopListeners(); if (licenseUnsub) { licenseUnsub(); licenseUnsub = null; } showLogin(); return; }
   try {
     const m = await getDoc(doc(db, 'userRestaurants', user.uid));
     if (!m.exists()) { loginError('This account is not linked to a restaurant.'); await signOut(auth); return; }
     S.uid = user.uid; S.email = user.email || ''; S.rid = m.data().restaurantId;
+
+    // License check - lets the developer remotely disable this login (e.g. unpaid account).
+    const licRef = doc(db, 'licenses', user.uid);
+    const lic = await getDoc(licRef);
+    if (!lic.exists()) {
+      // First time this account has opened the Desktop app - register it, enabled by default.
+      let restaurantName = '';
+      try { restaurantName = (await getDoc(doc(db, 'restaurants', S.rid))).data()?.name || ''; } catch (e) { }
+      await setDoc(licRef, { email: user.email, restaurantId: S.rid, restaurantName, enabled: true, createdAt: Date.now() });
+    } else if (lic.data().enabled === false) {
+      loginError('Access to this software has been disabled. Please contact support.');
+      await signOut(auth); return;
+    }
+    // Keep watching - if access is switched off while the app is open, log out immediately.
+    licenseUnsub = onSnapshot(licRef, snap => {
+      if (snap.exists() && snap.data().enabled === false && auth.currentUser) {
+        signOut(auth);
+        showLogin();
+        loginError('Access to this software has been disabled. Please contact support.');
+      }
+    });
   } catch (e) { loginError('Could not load account: ' + e.message); showLogin(); return; }
   showApp(); startListeners(); switchView(S.view);
   try { if (Notification.permission === 'default') Notification.requestPermission(); } catch (e) { }
