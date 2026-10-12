@@ -8,8 +8,11 @@ export const CATEGORY_EMOJI = {
   'Deals': '🎉', 'Starters & Fries': '🍟', 'Malik Signature': '⭐', 'Burgers': '🍔', 'Broast': '🍗',
   'Chicken Rolls': '🌯', 'Beef Rolls': '🌯', 'Sandwiches': '🥪', 'BBQ - Tikka & Boti': '🍖',
   'BBQ - Kabab': '🍢', 'Pizza': '🍕', 'Pasta & Paratha': '🍝', 'Chicken Karahi': '🥘',
-  'Beef Karahi': '🥘', 'Handi': '🍲', 'Chargha': '🍗', 'Sides & Drinks': '🥤'
+  'Beef Karahi': '🥘', 'Handi': '🍲', 'Chargha': '🍗', 'Sides & Drinks': '🥤', 'Packets & Bread': '🍞'
 };
+
+// Old items that should be removed when the menu is imported/updated.
+export const REMOVE_NAMES = ['Cold Drink (345ml)'];
 
 const PIZZA_SIZES = [{ name: 'Small', priceDelta: 0 }, { name: 'Medium', priceDelta: 350 }, { name: 'Large', priceDelta: 750 }];
 
@@ -148,7 +151,7 @@ export const MENU_SEED = [
   { cat: 'Handi', name: 'Cheese Handi', price: 1500, variants: [{ name: 'Half', priceDelta: 0 }, { name: 'Full', priceDelta: 1300 }] },
 
   // ───── Chargha ─────
-  { cat: 'Chargha', name: 'Malik Special Chargha', price: 1000, estimated: true, variants: [{ name: 'Half', priceDelta: 0 }, { name: 'Full', priceDelta: 800 }] },
+  { cat: 'Chargha', name: 'Malik Special Chargha', price: 1000, variants: [{ name: 'Half', priceDelta: 0 }, { name: 'Full', priceDelta: 800 }] },
 
   // ───── Sides & Drinks ─────
   { cat: 'Sides & Drinks', name: 'Bara Paratha', price: 100 },
@@ -156,6 +159,13 @@ export const MENU_SEED = [
   { cat: 'Sides & Drinks', name: 'Chapati', price: 20 },
   { cat: 'Sides & Drinks', name: 'Raita', price: 50 },
   { cat: 'Sides & Drinks', name: 'Chutni', price: 50 },
-  { cat: 'Sides & Drinks', name: 'Water Bottle', price: 50, estimated: true },
-  { cat: 'Sides & Drinks', name: 'Cold Drink (345ml)', price: 100, estimated: true }
+  // sync:true = if the item already exists, its price/sizes are updated too
+  { cat: 'Sides & Drinks', name: 'Cold Drink', price: 100, sync: true, variants: [{ name: '300 ml', priceDelta: 0 }, { name: '500 ml', priceDelta: 20 }, { name: '1 Ltr', priceDelta: 80 }, { name: '1.5 Ltr', priceDelta: 120 }, { name: 'Jumbo', priceDelta: 170 }] },
+  { cat: 'Sides & Drinks', name: 'Sting', price: 100, sync: true, variants: [{ name: '300 ml', priceDelta: 0 }, { name: '500 ml', priceDelta: 40 }] },
+  { cat: 'Sides & Drinks', name: 'Water Bottle', price: 50, sync: true, variants: [{ name: 'Small', priceDelta: 0 }, { name: 'Large', priceDelta: 40 }] },
+
+  // ───── Packets & Bread ─────
+  { cat: 'Packets & Bread', name: 'Burger Bun Packet', price: 180, sync: true },
+  { cat: 'Packets & Bread', name: 'Hot Dog Packet', price: 50, sync: true },
+  { cat: 'Packets & Bread', name: 'Bread Jumbo', price: 400, sync: true }
 ];

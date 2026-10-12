@@ -1,10 +1,10 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, onSnapshot, query, where, runTransaction, writeBatch
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
 import * as L from "./lib.js";
-import { MENU_SEED, CATEGORY_EMOJI } from "./menu-seed.js";
+import { MENU_SEED, CATEGORY_EMOJI, REMOVE_NAMES } from "./menu-seed.js";
 
 // Same Firebase project as the mobile apps and the website.
 const firebaseConfig = {
@@ -28,7 +28,7 @@ const S = {
   orders: [], ordersLoaded: false, view: 'orders', ordersFilter: 'active', ordersSearch: '',
   cart: [], orderType: 'DINE_IN', tableId: '', customer: { name: '', phone: '', address: '' },
   discount: 0, posCat: 'ALL', posSearch: '',
-  menuCat: 'ALL', menuSearch: '', reportOrders: [], reportPreset: 'today', alerts: [], unsubs: []
+  imageLib: {}, autoFilled: false, menuCat: 'ALL', menuSearch: '', reportOrders: [], reportPreset: 'today', alerts: [], unsubs: []
 };
 const cfg = Object.assign({ paper: '80', silent: false, printer: '', sound: true, theme: 'dark' },
   JSON.parse(localStorage.getItem('cfg') || '{}'));
@@ -86,6 +86,30 @@ function renderBanner() {
 }
 
 const typeLabel = t => ({ DINE_IN: 'Dine-in', TAKEAWAY: 'Takeaway', DELIVERY: 'Delivery' }[t] || t || '');
+// ───────── shared photo library ─────────
+// The owner's photos live in the top-level 'menuImages' collection (only the owner can write it,
+// every signed-in account can read it). Items with the same name get the same photo automatically.
+const OWNER_EMAIL = 'ubaidquershi221@gmail.com';
+const isOwner = () => (S.email || '').toLowerCase() === OWNER_EMAIL;
+const libKey = n => (n || '').toLowerCase().replace(/[^a-z0-9]+/g, '');
+const imgFor = p => p.imageUrl || S.imageLib[libKey(p.name)] || '';
+async function autoFillImages() {
+  if (S.autoFilled || !S.products.length || !Object.keys(S.imageLib).length) return;
+  S.autoFilled = true;
+  try {
+    const todo = S.products.filter(p => !p.imageUrl && S.imageLib[libKey(p.name)] && !/^(special )?deal\b/i.test(p.name || ''));
+    for (let i = 0; i < todo.length; i += 400) {
+      const b = writeBatch(db);
+      todo.slice(i, i + 400).forEach(p => b.update(doc(db, ...path('products', p.id)), { imageUrl: S.imageLib[libKey(p.name)] }));
+      await b.commit();
+    }
+    if (todo.length) toast(`${todo.length} item photos added automatically`);
+  } catch (e) { console.error(e); }
+}
+function productEmoji(p) {
+  const cat = S.categories.find(c => c.id === p.categoryId);
+  return (cat && CATEGORY_EMOJI[cat.name]) || '🍽️';
+}
 function productImage(p) {
   const cat = S.categories.find(c => c.id === p.categoryId);
   const emoji = (cat && CATEGORY_EMOJI[cat.name]) || '🍽️';
@@ -99,8 +123,14 @@ function loginError(m) { $('loginError').textContent = m || ''; }
 
 let licenseUnsub = null;
 
+let signupBusy = false;
 onAuthStateChanged(auth, async user => {
   if (!user) { stopListeners(); if (licenseUnsub) { licenseUnsub(); licenseUnsub = null; } showLogin(); return; }
+  if (signupBusy) return; // the signup flow finishes setting up the account itself
+  await enterApp(user);
+});
+
+async function enterApp(user) {
   try {
     const m = await getDoc(doc(db, 'userRestaurants', user.uid));
     if (!m.exists()) { loginError('This account is not linked to a restaurant.'); await signOut(auth); return; }
@@ -129,7 +159,7 @@ onAuthStateChanged(auth, async user => {
   } catch (e) { loginError('Could not load account: ' + e.message); showLogin(); return; }
   showApp(); startListeners(); switchView(S.view);
   try { if (Notification.permission === 'default') Notification.requestPermission(); } catch (e) { }
-});
+}
 
 // ───────── realtime data ─────────
 function stopListeners() { S.unsubs.forEach(u => u()); S.unsubs = []; S.ordersLoaded = false; }
@@ -144,10 +174,17 @@ function startListeners() {
   S.unsubs.push(onSnapshot(collection(db, ...path('products')), s => {
     S.products = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     if (S.view === 'pos') renderPOSProducts(); if (S.view === 'menu') renderMenu();
+    autoFillImages();
   }, err));
   S.unsubs.push(onSnapshot(collection(db, ...path('tables')), s => {
     S.tables = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => (a.label || '').localeCompare(b.label || '', undefined, { numeric: true }));
     if (S.view === 'pos') renderCart();
+  }, err));
+  S.autoFilled = false;
+  S.unsubs.push(onSnapshot(collection(db, 'menuImages'), s => {
+    S.imageLib = {}; s.docs.forEach(d => { if (d.data().url) S.imageLib[d.id] = d.data().url; });
+    if (S.view === 'pos') renderPOSProducts(); if (S.view === 'menu') renderMenu();
+    autoFillImages();
   }, err));
   const since = Date.now() - 45 * 86400000;
   S.unsubs.push(onSnapshot(query(collection(db, ...path('orders')), where('createdAt', '>=', since)), s => {
@@ -352,9 +389,19 @@ function renderPOSProducts() {
   const cats = [{ id: 'ALL', name: 'All' }, ...S.categories];
   $('pcats').innerHTML = cats.map(c => `<span class="chip ${S.posCat === c.id ? 'active' : ''}" data-act="pos-cat" data-id="${c.id}">${esc(c.name)}</span>`).join('');
   const list = S.products.filter(p => (S.posCat === 'ALL' || p.categoryId === S.posCat) && (!S.posSearch || (p.name || '').toLowerCase().includes(S.posSearch)));
-  $('pgrid').innerHTML = list.map(p => `<div class="pcard ${p.available === false ? 'off' : ''}" data-act="pos-add" data-id="${p.id}">
-    <img src="${esc(p.imageUrl || productImage(p))}" loading="lazy"><b>${esc(p.name)}</b><span>${MC(p.price)}</span>${p.available === false ? '<div class="muted small">Unavailable</div>' : ''}</div>`).join('')
-    || '<div class="muted">No items. Add them in Menu &amp; Prices.</div>';
+  $('pgrid').innerHTML = list.map(p => {
+    const unavailable = p.available === false ? '<div class="muted small">Unavailable</div>' : '';
+    const catN = (S.categories.find(c => c.id === p.categoryId) || {}).name || '';
+    if (/^deals$/i.test(catN) || /^(special )?deal\b/i.test(p.name || '')) {
+      const parts = (p.description || '').split(',').map(x => x.trim()).filter(Boolean);
+      return `<div class="pcard deal ${p.available === false ? 'off' : ''}" data-act="pos-add" data-id="${p.id}">
+        <div class="dhead"><b>${esc(p.name)}</b><span>${MC(p.price)}</span></div>
+        ${parts.length ? `<ul class="dlist">${parts.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}${unavailable}</div>`;
+    }
+    const pic = imgFor(p) ? `<img src="${esc(imgFor(p))}" loading="lazy" onerror="this.outerHTML='<div class=&quot;pico&quot;>${productEmoji(p)}</div>'">` : `<div class="pico">${productEmoji(p)}</div>`;
+    return `<div class="pcard ${p.available === false ? 'off' : ''}" data-act="pos-add" data-id="${p.id}">${pic}<b>${esc(p.name)}</b>${p.description ? `<small class="pdesc">${esc(p.description)}</small>` : ''}<span>${MC(p.price)}</span>${unavailable}</div>`;
+  }).join('')
+    || `<div class="muted">No items yet. <button class="btn primary sm" data-act="import-menu">Import Malik Taste Point menu</button> or add items in Menu &amp; Prices.</div>`;
 }
 
 let S_delivery = 0;
@@ -451,7 +498,7 @@ function renderMenu() {
   const list = S.products.filter(p => (S.menuCat === 'ALL' || p.categoryId === S.menuCat) && (!S.menuSearch || (p.name || '').toLowerCase().includes(S.menuSearch)));
   const catName = id => (S.categories.find(c => c.id === id) || {}).name || '-';
   $('mtable').innerHTML = `<table><tr><th>Item</th><th>Category</th><th>Price (${esc(cur())})</th><th>Available</th><th></th></tr>
-    ${list.map(p => `<tr><td style="display:flex;align-items:center;gap:8px"><img src="${esc(p.imageUrl || productImage(p))}" style="width:34px;height:34px;border-radius:8px;object-fit:cover"><b>${esc(p.name)}</b>${p.featured ? ' ⭐' : ''}</td><td>${esc(catName(p.categoryId))}</td>
+    ${list.map(p => `<tr><td style="display:flex;align-items:center;gap:8px"><img src="${esc(imgFor(p) || productImage(p))}" style="width:34px;height:34px;border-radius:8px;object-fit:cover"><b>${esc(p.name)}</b>${p.featured ? ' ⭐' : ''}</td><td>${esc(catName(p.categoryId))}</td>
       <td><input class="pricein" data-id="${p.id}" type="number" min="0" value="${Number(p.price) || 0}" style="width:110px;padding:7px 10px"></td>
       <td><div class="toggle ${p.available !== false ? 'on' : ''}" data-act="prod-toggle" data-id="${p.id}"></div></td>
       <td class="right"><button class="btn sm" data-act="prod-edit" data-id="${p.id}">Edit</button> <button class="btn sm danger" data-act="prod-del" data-id="${p.id}">Delete</button></td></tr>`).join('')
@@ -473,7 +520,15 @@ function productModal(p) {
     <div class="two"><div><label>Category</label><select id="pCat"><option value="">- none -</option>${S.categories.map(c => `<option value="${c.id}" ${c.id === p.categoryId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
       <div><label>Tax % (item)</label><input id="pTax" type="number" value="${p.taxPercent || 0}"></div></div>
     <label>Description</label><textarea id="pDesc" style="min-height:52px">${esc(p.description || '')}</textarea>
-    <label>Image link (optional - a themed icon is used automatically if left blank)</label><input id="pImg" value="${esc(p.imageUrl || '')}" placeholder="https://...">
+    <label>Photo (optional)</label>
+    <div class="photo-row">
+      <img id="pPrev" src="${esc(p.imageUrl || '')}" style="${p.imageUrl ? '' : 'display:none'}">
+      <button class="btn sm" data-act="pick-photo">📁 Choose photo</button>
+      <button class="btn sm" data-act="img-search">🔍 Find photo on Google</button>
+      <input id="pFile" type="file" accept="image/*" class="hidden">
+    </div>
+    <div class="muted small">Tip: on Google, right-click a photo → <b>Copy image</b>, then come back here and press <b>Ctrl+V</b>. It uploads automatically.</div>
+    <input id="pImg" value="${esc(p.imageUrl || '')}" placeholder="or paste an image link https://..." style="margin-top:6px">
     <label>Sizes / variants (one per line: Name, extra price)</label><textarea id="pVars" placeholder="Large, 150">${esc(L.variantsToText(p.variants))}</textarea>
     <label>Add-ons (one per line: Name, price)</label><textarea id="pAdds" placeholder="Extra cheese, 50">${esc(L.addOnsToText(p.addOns))}</textarea>
     <div class="two"><label style="display:flex;gap:8px;align-items:center;color:var(--tx)"><input id="pAvail" type="checkbox" style="width:auto" ${p.available !== false ? 'checked' : ''}> Available</label>
@@ -537,8 +592,11 @@ async function renderSettings() {
       <label style="display:flex;gap:8px;align-items:center;color:var(--tx)"><input id="cfgSound" type="checkbox" style="width:auto" ${cfg.sound ? 'checked' : ''}> Play sound when a new order arrives</label>
       <div class="foot" style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px"><button class="btn" data-act="test-sound">Test sound</button><button class="btn primary" data-act="save-sound">Save</button></div></div>
     <div class="glass card-pad"><h3>Starter menu</h3>
-      <p class="muted small">One-time import of Malik Taste Point's full menu (${MENU_SEED.length} items across ${new Set(MENU_SEED.map(m => m.cat)).size} categories) with prices and sizes, so you don't have to type it all in by hand. Safe to run more than once - it skips items that already exist by name. A few prices that weren't clearly printed were estimated and are worth double-checking afterward (Water Bottle, Cold Drink 345ml, Half Chargha, Flavour Pasta variants).</p>
+      <p class="muted small">One-time import of Malik Taste Point's full menu (${MENU_SEED.length} items across ${new Set(MENU_SEED.map(m => m.cat)).size} categories) with prices and sizes, so you don't have to type it all in by hand. Safe to run more than once - it never touches your existing items except to fill in missing deal contents and to update the drinks (Cold Drink, Sting, Water Bottle sizes) and the Packets &amp; Bread items. Flavour Pasta prices were not printed on the menu, so they are estimated at Rs 400 - please check them.</p>
       <div class="foot" style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn primary" data-act="import-menu">Import Full Menu</button></div></div>
+    ${isOwner() ? `<div class="glass card-pad"><h3>Shared photo library (owner)</h3>
+      <p class="muted small">Photos you add to items are shared automatically: every new account gets the same photo for items with the same name. If you added photos earlier, press the button once to share all of them now.</p>
+      <div class="foot" style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn primary" data-act="share-images">Share all my item photos</button></div></div>` : ''}
     <div class="glass card-pad"><h3>Appearance</h3><p class="muted small">Theme can also be switched from the bottom of the sidebar.</p>
       <div class="theme-toggle"><button data-act="theme" data-v="dark">🌙 Dark</button><button data-act="theme" data-v="light">☀️ Light</button></div></div>
     <div class="glass card-pad"><h3>Account</h3><p class="muted">Signed in as ${esc(S.email)}</p><button class="btn danger" data-act="logout">Logout</button></div>`;
@@ -552,6 +610,27 @@ async function renderSettings() {
 
 // ───────── actions ─────────
 const val = id => $(id).value;
+// Resize a photo to max 600px and upload it (same Cloudinary account as the mobile app).
+async function uploadPhoto(file) {
+  toast('Uploading photo...', 8000);
+  const bmp = await createImageBitmap(file);
+  const sc = Math.min(1, 600 / Math.max(bmp.width, bmp.height));
+  const c = document.createElement('canvas'); c.width = Math.round(bmp.width * sc); c.height = Math.round(bmp.height * sc);
+  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+  const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.82));
+  const fd = new FormData(); fd.append('file', blob, 'item.jpg'); fd.append('upload_preset', 'restaurantpos_unsigned');
+  const res = await fetch('https://api.cloudinary.com/v1_1/pwyofud8/image/upload', { method: 'POST', body: fd });
+  const j = await res.json();
+  if (!res.ok || !j.secure_url) throw new Error((j.error && j.error.message) || 'Upload failed');
+  $('pImg').value = j.secure_url; const pv = $('pPrev'); if (pv) { pv.src = j.secure_url; pv.style.display = ''; }
+  toast('Photo ready - press Save');
+}
+async function handlePhotoFile(file) { try { await uploadPhoto(file); } catch (e) { toast('Photo upload failed: ' + e.message, 5000); } }
+document.addEventListener('paste', e => {
+  if (!$('pFile')) return;
+  const f = [...(e.clipboardData?.files || [])].find(x => x.type.startsWith('image/'));
+  if (f) { e.preventDefault(); handlePhotoFile(f); }
+});
 const orderById = id => S.orders.find(o => o.id === id);
 const ACTS = {
   async login() {
@@ -559,6 +638,36 @@ const ACTS = {
     try { await signInWithEmailAndPassword(auth, val('loginEmail').trim(), val('loginPass')); }
     catch (e) { loginError(/invalid|wrong|user-not-found|credential/i.test(e.code + e.message) ? 'Wrong email or password' : e.message); }
     b.disabled = false; b.textContent = 'Login';
+  },
+  'show-signup'(el, e) { e.preventDefault(); loginError(''); $('signupError').textContent = ''; $('loginForm').classList.add('hidden'); $('signupForm').classList.remove('hidden'); },
+  'show-login'(el, e) { e.preventDefault(); $('signupError').textContent = ''; $('signupForm').classList.add('hidden'); $('loginForm').classList.remove('hidden'); },
+  async signup() {
+    const err = m => $('signupError').textContent = m || '';
+    err('');
+    const rname = val('suRest').trim(), owner = val('suOwner').trim(), phone = val('suPhone').trim(), email = val('suEmail').trim(), pass = val('suPass');
+    if (!rname || !owner || !email) { err('Please fill restaurant name, your name and email'); return; }
+    if (pass.length < 6) { err('Password must be at least 6 characters'); return; }
+    const b = $('signupBtn'); b.disabled = true; b.textContent = 'Creating account...';
+    signupBusy = true;
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email, pass);
+      const uid = cred.user.uid;
+      const rref = doc(collection(db, 'restaurants'));
+      // Same order as the mobile app: link user -> restaurant FIRST (the security rules need it).
+      await setDoc(doc(db, 'userRestaurants', uid), { restaurantId: rref.id });
+      await setDoc(rref, { id: rref.id, name: rname, ownerName: owner, phone, address: '', currency: 'PKR', logoUrl: '', receiptFooter: 'Thank You! Visit Again', taxPercent: 0, serviceChargePercent: 0 });
+      await setDoc(doc(db, 'restaurants', rref.id, 'staff', uid), { name: owner, role: 'OWNER', phone });
+      signupBusy = false;
+      await enterApp(cred.user);
+    } catch (e) {
+      signupBusy = false;
+      const c = (e.code || '') + ' ' + (e.message || '');
+      err(/email-already-in-use/.test(c) ? 'This email already has an account. Please Login instead.'
+        : /invalid-email/.test(c) ? 'That email address is not valid.'
+        : /weak-password/.test(c) ? 'Password is too weak (use at least 6 characters).'
+        : /network/.test(c) ? 'No internet connection.' : e.message);
+    }
+    b.disabled = false; b.textContent = 'Create account';
   },
   nav(el) { if (el.dataset.view === 'orders') ackAlerts(); switchView(el.dataset.view); },
   'alert-view'() { ackAlerts(); S.ordersFilter = 'active'; switchView('orders'); },
@@ -589,6 +698,12 @@ const ACTS = {
     closeModal(); toast('Paid and printed');
   },
   map(el) { const u = `https://www.google.com/maps?q=${el.dataset.lat},${el.dataset.lng}`; window.desktop ? window.desktop.openExternal(u) : window.open(u, '_blank'); },
+  'pick-photo'() { $('pFile').click(); },
+  'img-search'() {
+    const q = (val('pName').trim() || 'food') + ' food';
+    const u = 'https://www.google.com/search?tbm=isch&q=' + encodeURIComponent(q);
+    window.desktop ? window.desktop.openExternal(u) : window.open(u, '_blank');
+  },
   'pos-cat'(el) { S.posCat = el.dataset.id; renderPOSProducts(); },
   'pos-type'(el) { S.orderType = el.dataset.t; if (el.dataset.t !== 'DELIVERY') { S_delivery = 0; $('pdeliv').value = ''; } renderCart(); },
   'quick-deliv'(el) { S_delivery = parseFloat(el.dataset.v) || 0; $('pdeliv').value = S_delivery; renderCart(); },
@@ -636,7 +751,14 @@ const ACTS = {
     };
     const old = S.products.find(p => p.id === el.dataset.id); if (old && old.sku) data.sku = old.sku;
     const ref = el.dataset.id ? doc(db, ...path('products', el.dataset.id)) : doc(collection(db, ...path('products')));
-    await setDoc(ref, data); closeModal(); toast('Item saved');
+    await setDoc(ref, data);
+    if (isOwner()) {
+      try {
+        const lref = doc(db, 'menuImages', libKey(name));
+        if (data.imageUrl) await setDoc(lref, { name, url: data.imageUrl, updatedAt: Date.now() }); else await deleteDoc(lref);
+      } catch (e) { console.error(e); }
+    }
+    closeModal(); toast('Item saved');
   },
   'report-preset'(el) { runReport(el.dataset.k); },
   'report-custom'() {
@@ -676,23 +798,45 @@ const ACTS = {
         await setDoc(ref, { name, sortOrder: sort++ });
         catIds[name] = ref.id;
       }
-      const existingNames = new Set(S.products.map(p => p.name));
-      let batch = writeBatch(db), n = 0, added = 0;
+      const existingByName = new Map(S.products.map(p => [p.name, p]));
+      let batch = writeBatch(db), n = 0, added = 0, updated = 0, removed = 0;
+      const flush = async () => { if (n >= 400) { await batch.commit(); batch = writeBatch(db); n = 0; } };
+      for (const old of S.products.filter(p => REMOVE_NAMES.includes(p.name))) { batch.delete(doc(db, ...path('products', old.id))); n++; removed++; }
       for (const item of MENU_SEED) {
-        if (existingNames.has(item.name)) continue;
+        const ex = existingByName.get(item.name);
+        if (ex) {
+          if (item.sync) { batch.update(doc(db, ...path('products', ex.id)), { price: item.price, variants: item.variants || [], description: item.description || '' }); n++; updated++; }
+          else if (item.description && !ex.description) { batch.update(doc(db, ...path('products', ex.id)), { description: item.description }); n++; updated++; }
+          await flush(); continue;
+        }
         const ref = doc(collection(db, ...path('products')));
         batch.set(ref, {
           name: item.name, description: item.description || '', price: item.price, costPrice: 0,
-          imageUrl: '', categoryId: catIds[item.cat], sku: '', available: true, featured: !!item.featured,
+          imageUrl: S.imageLib[libKey(item.name)] || '', categoryId: catIds[item.cat], sku: '', available: true, featured: !!item.featured,
           taxPercent: 0, variants: item.variants || [], addOns: []
         });
         n++; added++;
-        if (n >= 400) { await batch.commit(); batch = writeBatch(db); n = 0; }
+        await flush();
       }
       if (n > 0) await batch.commit();
-      toast(added > 0 ? `Imported ${added} new items` : 'Everything was already imported');
+      toast(added || updated || removed ? `Done: ${added} new, ${updated} updated${removed ? `, ${removed} removed` : ''}` : 'Everything is already up to date');
     } catch (e) { toast('Import failed: ' + e.message, 5000); }
-    el.disabled = false; el.textContent = 'Import Full Menu';
+    el.disabled = false; el.textContent = el.classList.contains('sm') ? 'Import Malik Taste Point menu' : 'Import Full Menu';
+  },
+  async 'share-images'(el) {
+    if (!isOwner()) return;
+    const list = S.products.filter(p => p.imageUrl && !/^(special )?deal\b/i.test(p.name || ''));
+    if (!list.length) { toast('No item photos to share yet'); return; }
+    el.disabled = true;
+    try {
+      for (let i = 0; i < list.length; i += 400) {
+        const b = writeBatch(db);
+        list.slice(i, i + 400).forEach(p => b.set(doc(db, 'menuImages', libKey(p.name)), { name: p.name, url: p.imageUrl, updatedAt: Date.now() }));
+        await b.commit();
+      }
+      toast(`${list.length} photos shared with all accounts`);
+    } catch (e) { toast('Could not share: ' + e.message, 6000); }
+    el.disabled = false;
   },
   'test-sound'() { const s = cfg.sound; cfg.sound = true; beep(); cfg.sound = s; },
   async logout() { if (confirm('Logout?')) { ackAlerts(); await signOut(auth); } },
@@ -707,12 +851,13 @@ document.addEventListener('click', async e => {
   try { await fn(el, e); } catch (err) { console.error(err); toast('Error: ' + (err.message || err), 5000); }
 });
 document.addEventListener('change', async e => {
+  if (e.target.id === 'pFile' && e.target.files[0]) { await handlePhotoFile(e.target.files[0]); return; }
   if (e.target.classList.contains('pricein')) {
     try { await updateDoc(doc(db, ...path('products', e.target.dataset.id)), { price: parseFloat(e.target.value) || 0 }); toast('Price updated'); }
     catch (err) { toast('Error: ' + err.message); }
   }
 });
-document.addEventListener('keydown', e => { if (e.key === 'Enter' && !$('loginScreen').classList.contains('hidden')) ACTS.login(); if (e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', e => { if (e.key === 'Enter' && !$('loginScreen').classList.contains('hidden')) { $('signupForm').classList.contains('hidden') ? ACTS.login() : ACTS.signup(); } if (e.key === 'Escape') closeModal(); });
 
 const setNet = () => { const on = navigator.onLine; $('netDot').classList.toggle('on', on); $('netText').textContent = on ? 'Online' : 'Offline - working locally'; };
 window.addEventListener('online', setNet); window.addEventListener('offline', setNet); setNet();

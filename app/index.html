@@ -11,11 +11,27 @@
   <div class="glass login-card">
     <div class="logo">🍽️</div>
     <h1>Restaurant POS</h1>
-    <p class="muted">Sign in with the same email and password as the mobile app.</p>
-    <input id="loginEmail" type="email" placeholder="Email" autocomplete="username" />
-    <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password" />
-    <div id="loginError" class="error"></div>
-    <button id="loginBtn" class="btn primary big" data-act="login">Login</button>
+
+    <div id="loginForm">
+      <p class="muted">Sign in with your email and password.</p>
+      <input id="loginEmail" type="email" placeholder="Email" autocomplete="username" />
+      <input id="loginPass" type="password" placeholder="Password" autocomplete="current-password" />
+      <div id="loginError" class="error"></div>
+      <button id="loginBtn" class="btn primary big" data-act="login">Login</button>
+      <p class="muted small" style="margin-top:14px">New restaurant? <a href="#" class="lnk" data-act="show-signup">Create a new account</a></p>
+    </div>
+
+    <div id="signupForm" class="hidden">
+      <p class="muted">Create your restaurant account.</p>
+      <input id="suRest" placeholder="Restaurant name" />
+      <input id="suOwner" placeholder="Your name" />
+      <input id="suPhone" placeholder="Phone number" />
+      <input id="suEmail" type="email" placeholder="Email" autocomplete="off" />
+      <input id="suPass" type="password" placeholder="Password (min 6 characters)" autocomplete="new-password" />
+      <div id="signupError" class="error"></div>
+      <button id="signupBtn" class="btn primary big" data-act="signup">Create account</button>
+      <p class="muted small" style="margin-top:14px">Already have an account? <a href="#" class="lnk" data-act="show-login">Login</a></p>
+    </div>
   </div>
 </div>
 
