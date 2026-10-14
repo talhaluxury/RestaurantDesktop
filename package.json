@@ -1,7 +1,7 @@
 {
   "name": "restaurant-pos-desktop",
   "productName": "Restaurant POS",
-  "version": "1.1.0",
+  "version": "1.0.0",
   "description": "Restaurant POS for Windows laptops - live orders, billing, menu, reports and slip printing.",
   "main": "main.js",
   "author": "Talha",

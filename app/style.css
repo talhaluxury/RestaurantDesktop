@@ -100,6 +100,8 @@ th{color:var(--tx3);font-size:11px;letter-spacing:.6px;text-transform:uppercase}
 .modal{width:560px;max-width:92vw;max-height:88vh;overflow:auto;padding:24px;background:#0F1621}
 .modal .foot{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1b2431;border:1px solid var(--bd2);padding:12px 20px;border-radius:99px;z-index:99;box-shadow:0 8px 30px rgba(0,0,0,.5)}
+.offline-banner{position:sticky;top:0;z-index:21;margin-bottom:14px;padding:11px 18px;border-radius:var(--r-l);
+  background:rgba(255,92,92,.16);border:1px solid var(--red);color:var(--tx);font-size:13px;font-weight:600}
 .alert-banner{position:sticky;top:0;z-index:20;margin-bottom:14px;padding:14px 18px;border-radius:var(--r-l);background:rgba(255,157,46,.2);
   border:1px solid var(--accent);display:flex;gap:12px;align-items:center;animation:pulse 1.2s infinite}
 .alert-banner b{flex:1;font-size:16px}
@@ -134,15 +136,3 @@ html[data-theme="light"] .btn.primary{color:#2a1500}
 .slip-preview .tot{font-weight:800;font-size:14px}
 .pending-dot{width:8px;height:8px;border-radius:50%;background:var(--red);display:inline-block;margin-right:5px;animation:pulse2 1.4s infinite}
 @keyframes pulse2{0%,100%{opacity:1}50%{opacity:.3}}
-
-/* ── simple login/signup + new POS cards ── */
-.lnk{color:var(--accent2);cursor:pointer;font-weight:700;text-decoration:none}
-.login-card{max-height:96vh;overflow:auto}
-.pcard .pico{height:64px;display:flex;align-items:center;justify-content:center;font-size:38px;margin-bottom:6px;border-radius:var(--r-m);background:var(--g1)}
-.pcard.deal{grid-column:span 2;display:flex;flex-direction:column}
-.pcard.deal .dhead{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
-.pcard.deal .dhead b{font-size:16px}.pcard.deal .dhead span{font-size:16px}
-.dlist{margin:0 0 4px;padding-left:18px;color:var(--tx2);font-size:12.5px;line-height:1.5}
-.pdesc{display:block;color:var(--tx3);font-size:11px;margin:2px 0 4px;line-height:1.3}
-.photo-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:4px 0}
-.photo-row img{width:64px;height:64px;border-radius:10px;object-fit:cover;border:1px solid var(--bd)}

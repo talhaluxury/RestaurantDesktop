@@ -38,8 +38,12 @@ Same email and password as the mobile app (the restaurant owner/staff account).
 
 - Works like a normal Windows app (not a browser tab) - has its own icon, its own window,
   and remembers your login between launches.
-- If the laptop briefly loses internet, the window keeps working and reconnects
-  automatically (Firestore's own offline cache) - a fully offline queue like the mobile
-  app's isn't included in this first version.
+- **Works fully offline.** If the internet goes down, a red "Offline" banner appears,
+  but POS billing, the menu, live orders and printing all keep working normally - every
+  order and edit is saved on this computer and queued automatically. A new order placed
+  offline gets a temporary number like `OFFLINE-ABC123` so the kitchen slip prints right
+  away; it's swapped for a real `#000123` number by itself the moment the internet comes
+  back. Sales Reports need internet the first time you view a given date range (they
+  show a clear "Could not load" message offline instead of wrong numbers).
 - To change which printer or paper width is used, or turn the new-order sound on/off, go
   to **Settings** inside the app.
