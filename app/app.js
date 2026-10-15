@@ -315,7 +315,7 @@ function paymentModal(order) {
     const deliv = isDelivery ? (parseFloat($('payDeliv').value) || 0) : 0;
     const t = L.totals(order.items, S.restaurant.taxPercent, S.restaurant.serviceChargePercent, disc, deliv);
     const received = parseFloat($('payRecv').value) || 0;
-    return { ...order, discount: t.discount, deliveryCharge: t.deliveryCharge, tax: t.tax, serviceCharge: t.serviceCharge, total: t.total, paymentMethod: $('payMethod').value, amountReceived: received, changeDue: Math.max(0, received - t.total) };
+    return { ...order, discount: t.discount, deliveryCharge: t.deliveryCharge, tax: t.tax, serviceCharge: t.serviceCharge, total: t.total, paymentMethod: $('payMethod').value, amountReceived: received, changeDue: Math.max(0, received - t.total), paymentStatus: 'PAID' };
   }
   function updatePreview() {
     const o = currentOrder();
@@ -479,8 +479,21 @@ const CLOUDINARY_UPLOAD_PRESET = 'restaurantpos_unsigned';
 // Online: upload to Cloudinary and use its https link (works in the mobile app & website too).
 // Offline / not configured / upload failed: keep the small resized photo inside the item
 // itself so saving never gets stuck.
+function shrinkDataUrl(dataUrl, max = 500, q = 0.7) {
+  return new Promise(res => {
+    const img = new Image();
+    img.onerror = () => res(dataUrl);
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+      res(c.toDataURL('image/jpeg', q));
+    };
+    img.src = dataUrl;
+  });
+}
 async function resolveProductImage(dataUrl, productId) {
-  if (!navigator.onLine || CLOUDINARY_CLOUD_NAME.startsWith('YOUR_')) return dataUrl;
+  if (!navigator.onLine || CLOUDINARY_CLOUD_NAME.startsWith('YOUR_')) return shrinkDataUrl(dataUrl);
   try {
     const fd = new FormData();
     fd.append('file', dataUrl);
@@ -493,7 +506,7 @@ async function resolveProductImage(dataUrl, productId) {
     const j = await r.json();
     if (!r.ok || !j.secure_url) throw new Error((j.error && j.error.message) || 'Upload failed');
     return j.secure_url;
-  } catch (e) { toast('Cloudinary upload failed - photo saved inside the item instead (' + e.message + ')', 5000); return dataUrl; }
+  } catch (e) { toast('Cloudinary upload failed - photo saved inside the item instead (' + e.message + ')', 5000); return shrinkDataUrl(dataUrl); }
 }
 
 async function placeOrder() {
@@ -732,15 +745,14 @@ const ACTS = {
   'prod-edit'(el) { productModal(S.products.find(p => p.id === el.dataset.id)); },
   async 'prod-toggle'(el) { const p = S.products.find(x => x.id === el.dataset.id); await wUpd(doc(db, ...path('products', p.id)), { available: p.available === false }); },
   async 'prod-del'(el) { const p = S.products.find(x => x.id === el.dataset.id); if (confirm(`Delete "${p.name}"?`)) await wDel(doc(db, ...path('products', p.id))); },
-  'pimg-pick'() { pendingImg = null; $('pImgFile').value = ''; $('pImgFile').click(); },
+  'pimg-pick'() { $('pImgFile').value = ''; $('pImgFile').click(); },
   'pimg-clear'() { pendingImg = null; $('pImg').value = ''; $('pImgFile').value = ''; const i = $('pImgPrev'); i.removeAttribute('src'); i.style.display = 'none'; pendingImg = ''; },
   async 'prod-save'(el) {
     const name = val('pName').trim(); if (!name) { toast('Enter an item name'); return; }
     const ref = el.dataset.id ? doc(db, ...path('products', el.dataset.id)) : doc(collection(db, ...path('products')));
     let imageUrl = val('pImg').trim();
     if (pendingImg) { const b = el; b.disabled = true; b.textContent = 'Saving...'; imageUrl = await resolveProductImage(pendingImg, ref.id); }
-    else if (pendingImg === '') imageUrl = '';
-    else if (!imageUrl) { const o = S.products.find(p => p.id === el.dataset.id); if (o && /^data:/.test(o.imageUrl || '')) imageUrl = o.imageUrl; }
+    else if (!imageUrl && pendingImg !== '') { const o = S.products.find(p => p.id === el.dataset.id); if (o && /^data:/.test(o.imageUrl || '')) imageUrl = o.imageUrl; }
     pendingImg = null;
     const data = {
       name, description: val('pDesc').trim(), price: parseFloat(val('pPrice')) || 0, costPrice: parseFloat(val('pCost')) || 0,
@@ -823,9 +835,9 @@ const ACTS = {
           taxPercent: 0, variants: item.variants || [], addOns: []
         });
         n++; added++;
-        if (n >= 400) { await batch.commit(); batch = writeBatch(db); n = 0; }
+        if (n >= 400) { _bg(batch.commit()); batch = writeBatch(db); n = 0; }
       }
-      if (n > 0) await batch.commit();
+      if (n > 0) _bg(batch.commit());
       toast(added > 0 ? `Imported ${added} new items` : 'Everything was already imported');
     } catch (e) { toast('Import failed: ' + e.message, 5000); }
     el.disabled = false; el.textContent = 'Import Full Menu';
