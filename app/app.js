@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential, updatePassword } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
 import {
   initializeFirestore, persistentLocalCache, persistentSingleTabManager,
   doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, onSnapshot, query, where, runTransaction, writeBatch
@@ -277,7 +277,7 @@ function orderCard(o) {
     <div class="actions">
       ${nxt ? `<button class="btn primary sm" data-act="adv" data-id="${o.id}" data-st="${nxt[0]}">${nxt[1]}</button>` : ''}
       ${o.paymentStatus === 'UNPAID'
-        ? `<button class="btn sm green" data-act="collect-pay" data-id="${o.id}">💰 Collect Payment</button>`
+        ? `<button class="btn sm green" data-act="collect-pay" data-id="${o.id}">💰 Collect Payment</button>${o.status !== 'CANCELLED' ? `<button class="btn sm" data-act="print-order" data-id="${o.id}">🖨️ Unpaid Slip</button>` : ''}`
         : `<button class="btn sm" data-act="print-order" data-id="${o.id}">🖨️ Slip</button>${o.status !== 'CANCELLED' ? `<button class="btn sm" data-act="edit-slip" data-id="${o.id}">✏️ Edit Slip</button>` : ''}`}
       ${loc ? `<button class="btn sm" data-act="map" data-lat="${loc.lat}" data-lng="${loc.lng}">📍 Customer</button>` : ''}
       ${live && ['NEW', 'PREPARING', 'READY'].includes(o.status) ? `<button class="btn sm" data-act="map" data-lat="${live.lat}" data-lng="${live.lng}">🏍️ Rider</button>` : ''}
@@ -305,11 +305,8 @@ function paymentModal(order) {
       <div><label>Slip preview</label><iframe id="slipFrame" class="slip-preview" style="width:100%;border:none"></iframe></div>
     </div>
     <div class="foot"><button class="btn" data-act="modal-close">Close</button>
-      ${(order.orderType === 'DINE_IN' && order.paymentStatus === 'UNPAID')
-        // Dine-in: the slip was already printed when the order was sent, so no second slip here.
-        ? `<button class="btn primary" data-act="pay-save" data-id="${order.id}">Save Payment (no slip)</button>`
-        : `<button class="btn" data-act="pay-save" data-id="${order.id}">Save (no print)</button>
-      <button class="btn primary" data-act="pay-print" data-id="${order.id}">🖨️ Print &amp; Save</button>`}</div>`);
+      <button class="btn" data-act="pay-save" data-id="${order.id}">Save (no print)</button>
+      <button class="btn primary" data-act="pay-print" data-id="${order.id}">🖨️ Print &amp; Save</button></div>`);
 
   $('payMethod').value = order.paymentMethod || 'CASH';
 
@@ -518,8 +515,7 @@ async function placeOrder() {
     };
     const ref = doc(collection(db, ...path('orders')));
     await wSet(ref, data);
-    // Dine-in: print the (unpaid) slip now. Takeaway/Delivery: no slip here - printed once when payment is collected.
-    if (data.orderType === 'DINE_IN') printOrder(data);
+    // No slip here: only ONE slip is printed per order - the paid (cash) slip when payment is collected.
     toast('Order ' + orderNumber + ' sent to kitchen - pending payment');
     S.cart = []; S.discount = 0; S_delivery = 0; S.customer = { name: '', phone: '', address: '' };
     ['pdisc', 'pdeliv', 'cname', 'cphone', 'caddr'].forEach(id => $(id) && ($(id).value = ''));
@@ -644,6 +640,12 @@ async function renderSettings() {
       <div class="foot" style="display:flex;justify-content:flex-end;margin-top:10px"><button class="btn primary" data-act="import-menu">Import Full Menu</button></div></div>
     <div class="glass card-pad"><h3>Appearance</h3><p class="muted small">Theme can also be switched from the bottom of the sidebar.</p>
       <div class="theme-toggle"><button data-act="theme" data-v="dark">🌙 Dark</button><button data-act="theme" data-v="light">☀️ Light</button></div></div>
+    <div class="glass card-pad"><h3>Change password</h3>
+      <label>Current password</label><input id="pwOld" type="password" autocomplete="current-password">
+      <label>New password (at least 6 characters)</label><input id="pwNew" type="password" autocomplete="new-password">
+      <label>Confirm new password</label><input id="pwNew2" type="password" autocomplete="new-password">
+      <div class="foot" style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn primary" data-act="change-pass">Change Password</button></div>
+      <div class="muted small">Needs an internet connection.</div></div>
     <div class="glass card-pad"><h3>Account</h3><p class="muted">Signed in as ${esc(S.email)}</p><button class="btn danger" data-act="logout">Logout</button></div>`;
   document.querySelectorAll('#view-settings .theme-toggle button').forEach(b => b.classList.toggle('active', b.dataset.v === cfg.theme));
   if (window.desktop) {
@@ -766,6 +768,30 @@ const ACTS = {
       taxPercent: parseFloat(val('sTax')) || 0, serviceChargePercent: parseFloat(val('sSvc')) || 0
     }, { merge: true });
     toast('Saved');
+  },
+  async 'change-pass'(el) {
+    const oldP = val('pwOld'), n1 = val('pwNew'), n2 = val('pwNew2');
+    if (!oldP || !n1) { toast('Please fill in all the fields'); return; }
+    if (n1.length < 6) { toast('New password must be at least 6 characters'); return; }
+    if (n1 !== n2) { toast('New passwords do not match'); return; }
+    if (n1 === oldP) { toast('New password must be different from the current one'); return; }
+    if (!navigator.onLine) { toast('Connect to the internet to change your password'); return; }
+    el.disabled = true; el.textContent = 'Changing...';
+    try {
+      const u = auth.currentUser;
+      await reauthenticateWithCredential(u, EmailAuthProvider.credential(u.email, oldP));
+      await updatePassword(u, n1);
+      ['pwOld', 'pwNew', 'pwNew2'].forEach(id => $(id).value = '');
+      toast('Password changed successfully');
+    } catch (e) {
+      const c = e && e.code || '';
+      toast(/wrong-password|invalid-credential|invalid-login/.test(c) ? 'Current password is incorrect'
+        : /weak-password/.test(c) ? 'New password is too weak'
+        : /too-many-requests/.test(c) ? 'Too many attempts - try again in a few minutes'
+        : /network/.test(c) ? 'No internet connection'
+        : 'Could not change password: ' + (e.message || c), 5000);
+    }
+    el.disabled = false; el.textContent = 'Change Password';
   },
   'save-print'() { cfg.paper = val('cfgPaper'); cfg.printer = val('cfgPrinter'); cfg.silent = $('cfgSilent').checked; saveCfg(); toast('Printer settings saved'); },
   'test-print'() {
