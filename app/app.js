@@ -305,8 +305,11 @@ function paymentModal(order) {
       <div><label>Slip preview</label><iframe id="slipFrame" class="slip-preview" style="width:100%;border:none"></iframe></div>
     </div>
     <div class="foot"><button class="btn" data-act="modal-close">Close</button>
-      <button class="btn" data-act="pay-save" data-id="${order.id}">Save (no print)</button>
-      <button class="btn primary" data-act="pay-print" data-id="${order.id}">🖨️ Print &amp; Save</button></div>`);
+      ${(order.orderType === 'DINE_IN' && order.paymentStatus === 'UNPAID')
+        // Dine-in: the slip was already printed when the order was sent, so no second slip here.
+        ? `<button class="btn primary" data-act="pay-save" data-id="${order.id}">Save Payment (no slip)</button>`
+        : `<button class="btn" data-act="pay-save" data-id="${order.id}">Save (no print)</button>
+      <button class="btn primary" data-act="pay-print" data-id="${order.id}">🖨️ Print &amp; Save</button>`}</div>`);
 
   $('payMethod').value = order.paymentMethod || 'CASH';
 
@@ -515,6 +518,8 @@ async function placeOrder() {
     };
     const ref = doc(collection(db, ...path('orders')));
     await wSet(ref, data);
+    // Dine-in: print the (unpaid) slip now. Takeaway/Delivery: no slip here - printed once when payment is collected.
+    if (data.orderType === 'DINE_IN') printOrder(data);
     toast('Order ' + orderNumber + ' sent to kitchen - pending payment');
     S.cart = []; S.discount = 0; S_delivery = 0; S.customer = { name: '', phone: '', address: '' };
     ['pdisc', 'pdeliv', 'cname', 'cphone', 'caddr'].forEach(id => $(id) && ($(id).value = ''));
