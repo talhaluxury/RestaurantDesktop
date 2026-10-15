@@ -451,6 +451,51 @@ async function reconcileOfflineOrderNumbers() {
   reconciling = false;
 }
 
+
+// ───────── product photo upload ─────────
+let pendingImg = null; // data URL of a freshly picked photo (resized), not yet saved
+function resizeImage(file, max = 1280, q = 0.8) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onerror = () => rej(new Error('Could not read the image'));
+    fr.onload = () => {
+      const img = new Image();
+      img.onerror = () => rej(new Error('Not a valid image'));
+      img.onload = () => {
+        const k = Math.min(1, max / Math.max(img.width, img.height));
+        const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+        const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+        res(c.toDataURL('image/jpeg', q));
+      };
+      img.src = fr.result;
+    };
+    fr.readAsDataURL(file);
+  });
+}
+// ── Cloudinary settings (same account/preset as the mobile app) ──
+const CLOUDINARY_CLOUD_NAME = 'pwyofud8';
+const CLOUDINARY_UPLOAD_PRESET = 'restaurantpos_unsigned';
+
+// Online: upload to Cloudinary and use its https link (works in the mobile app & website too).
+// Offline / not configured / upload failed: keep the small resized photo inside the item
+// itself so saving never gets stuck.
+async function resolveProductImage(dataUrl, productId) {
+  if (!navigator.onLine || CLOUDINARY_CLOUD_NAME.startsWith('YOUR_')) return dataUrl;
+  try {
+    const fd = new FormData();
+    fd.append('file', dataUrl);
+    fd.append('upload_preset', CLOUDINARY_UPLOAD_PRESET);
+    fd.append('folder', `restaurants/${S.rid}/products`);
+    fd.append('public_id', productId);
+    const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 20000);
+    const r = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`, { method: 'POST', body: fd, signal: ctl.signal });
+    clearTimeout(t);
+    const j = await r.json();
+    if (!r.ok || !j.secure_url) throw new Error((j.error && j.error.message) || 'Upload failed');
+    return j.secure_url;
+  } catch (e) { toast('Cloudinary upload failed - photo saved inside the item instead (' + e.message + ')', 5000); return dataUrl; }
+}
+
 async function placeOrder() {
   if (!S.cart.length) return;
   if (S.orderType === 'DELIVERY' && !S.customer.address.trim()) { toast('Please enter the delivery address'); return; }
@@ -511,6 +556,7 @@ function categoryModal(c) {
 }
 
 function productModal(p) {
+  pendingImg = null;
   p = p || { name: '', description: '', price: 0, costPrice: 0, imageUrl: '', categoryId: S.menuCat !== 'ALL' ? S.menuCat : '', sku: '', taxPercent: 0, available: true, featured: false, variants: [], addOns: [] };
   openModal(`<h3>${p.id ? 'Edit' : 'New'} item</h3>
     <label>Name</label><input id="pName" value="${esc(p.name)}">
@@ -518,7 +564,14 @@ function productModal(p) {
     <div class="two"><div><label>Category</label><select id="pCat"><option value="">- none -</option>${S.categories.map(c => `<option value="${c.id}" ${c.id === p.categoryId ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></div>
       <div><label>Tax % (item)</label><input id="pTax" type="number" value="${p.taxPercent || 0}"></div></div>
     <label>Description</label><textarea id="pDesc" style="min-height:52px">${esc(p.description || '')}</textarea>
-    <label>Image link (optional - a themed icon is used automatically if left blank)</label><input id="pImg" value="${esc(p.imageUrl || '')}" placeholder="https://...">
+    <label>Image (optional - a themed icon is used automatically if left blank)</label>
+    <div style="display:flex;gap:10px;align-items:center;margin-bottom:6px">
+      <img id="pImgPrev" src="${esc(p.imageUrl || '')}" style="width:56px;height:56px;border-radius:10px;object-fit:cover;${p.imageUrl ? '' : 'display:none'}">
+      <input id="pImgFile" type="file" accept="image/*" style="display:none">
+      <button class="btn" type="button" data-act="pimg-pick">📷 Upload photo</button>
+      <button class="btn sm" type="button" data-act="pimg-clear">Remove</button>
+    </div>
+    <input id="pImg" value="${/^data:/.test(p.imageUrl || '') ? '' : esc(p.imageUrl || '')}" placeholder="...or paste an image link https://...">
     <label>Sizes / variants (one per line: Name, extra price)</label><textarea id="pVars" placeholder="Large, 150">${esc(L.variantsToText(p.variants))}</textarea>
     <label>Add-ons (one per line: Name, price)</label><textarea id="pAdds" placeholder="Extra cheese, 50">${esc(L.addOnsToText(p.addOns))}</textarea>
     <div class="two"><label style="display:flex;gap:8px;align-items:center;color:var(--tx)"><input id="pAvail" type="checkbox" style="width:auto" ${p.available !== false ? 'checked' : ''}> Available</label>
@@ -672,15 +725,22 @@ const ACTS = {
   'prod-edit'(el) { productModal(S.products.find(p => p.id === el.dataset.id)); },
   async 'prod-toggle'(el) { const p = S.products.find(x => x.id === el.dataset.id); await wUpd(doc(db, ...path('products', p.id)), { available: p.available === false }); },
   async 'prod-del'(el) { const p = S.products.find(x => x.id === el.dataset.id); if (confirm(`Delete "${p.name}"?`)) await wDel(doc(db, ...path('products', p.id))); },
+  'pimg-pick'() { pendingImg = null; $('pImgFile').value = ''; $('pImgFile').click(); },
+  'pimg-clear'() { pendingImg = null; $('pImg').value = ''; $('pImgFile').value = ''; const i = $('pImgPrev'); i.removeAttribute('src'); i.style.display = 'none'; pendingImg = ''; },
   async 'prod-save'(el) {
     const name = val('pName').trim(); if (!name) { toast('Enter an item name'); return; }
+    const ref = el.dataset.id ? doc(db, ...path('products', el.dataset.id)) : doc(collection(db, ...path('products')));
+    let imageUrl = val('pImg').trim();
+    if (pendingImg) { const b = el; b.disabled = true; b.textContent = 'Saving...'; imageUrl = await resolveProductImage(pendingImg, ref.id); }
+    else if (pendingImg === '') imageUrl = '';
+    else if (!imageUrl) { const o = S.products.find(p => p.id === el.dataset.id); if (o && /^data:/.test(o.imageUrl || '')) imageUrl = o.imageUrl; }
+    pendingImg = null;
     const data = {
       name, description: val('pDesc').trim(), price: parseFloat(val('pPrice')) || 0, costPrice: parseFloat(val('pCost')) || 0,
-      imageUrl: val('pImg').trim(), categoryId: val('pCat'), sku: '', available: $('pAvail').checked, featured: $('pFeat').checked,
+      imageUrl, categoryId: val('pCat'), sku: '', available: $('pAvail').checked, featured: $('pFeat').checked,
       taxPercent: parseFloat(val('pTax')) || 0, variants: L.parseVariants(val('pVars')), addOns: L.parseAddOns(val('pAdds'))
     };
     const old = S.products.find(p => p.id === el.dataset.id); if (old && old.sku) data.sku = old.sku;
-    const ref = el.dataset.id ? doc(db, ...path('products', el.dataset.id)) : doc(collection(db, ...path('products')));
     await wSet(ref, data); closeModal(); toast('Item saved');
   },
   'report-preset'(el) { runReport(el.dataset.k); },
@@ -752,6 +812,13 @@ document.addEventListener('click', async e => {
   try { await fn(el, e); } catch (err) { console.error(err); toast('Error: ' + (err.message || err), 5000); }
 });
 document.addEventListener('change', async e => {
+  if (e.target.id === 'pImgFile' && e.target.files[0]) {
+    try {
+      pendingImg = await resizeImage(e.target.files[0]);
+      const i = $('pImgPrev'); i.src = pendingImg; i.style.display = ''; $('pImg').value = '';
+    } catch (err) { toast(err.message); }
+    return;
+  }
   if (e.target.classList.contains('pricein')) {
     try { await wUpd(doc(db, ...path('products', e.target.dataset.id)), { price: parseFloat(e.target.value) || 0 }); toast('Price updated'); }
     catch (err) { toast('Error: ' + err.message); }
