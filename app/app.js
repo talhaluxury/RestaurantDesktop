@@ -27,6 +27,16 @@ const db = initializeFirestore(app, {
   localCache: persistentLocalCache({ tabManager: persistentSingleTabManager({}) })
 });
 
+
+// Offline-safe writes: Firestore applies the write to the local cache instantly (screen
+// updates, order is queued on disk) but the returned promise only resolves once the
+// SERVER confirms - which never happens offline, so "await" would freeze the UI forever
+// ("Sending..." stuck). So we don't wait for the server; real errors still show a toast.
+const _bg = p => { Promise.resolve(p).catch(e => { try { toast('Could not save: ' + (e && e.message || e), 5000); } catch (_) { } }); return Promise.resolve(); };
+const wSet = (...a) => _bg(setDoc(...a));
+const wUpd = (...a) => _bg(updateDoc(...a));
+const wDel = (...a) => _bg(deleteDoc(...a));
+
 const $ = id => document.getElementById(id);
 const esc = L.esc;
 
@@ -459,7 +469,7 @@ async function placeOrder() {
       status: 'NEW', cashierName: (S.email || 'Laptop').split('@')[0], createdAt: Date.now()
     };
     const ref = doc(collection(db, ...path('orders')));
-    await setDoc(ref, data);
+    await wSet(ref, data);
     toast('Order ' + orderNumber + ' sent to kitchen - pending payment');
     S.cart = []; S.discount = 0; S_delivery = 0; S.customer = { name: '', phone: '', address: '' };
     ['pdisc', 'pdeliv', 'cname', 'cphone', 'caddr'].forEach(id => $(id) && ($(id).value = ''));
@@ -599,15 +609,15 @@ const ACTS = {
   'alert-view'() { ackAlerts(); S.ordersFilter = 'active'; switchView('orders'); },
   'alert-silence'() { ackAlerts(); },
   ofilter(el) { S.ordersFilter = el.dataset.f; renderOrders(); },
-  async adv(el) { await updateDoc(doc(db, ...path('orders', el.dataset.id)), { status: el.dataset.st, ...(el.dataset.st === 'COMPLETED' ? { completedAt: Date.now() } : {}) }); },
-  async 'cancel-order'(el) { if (confirm('Cancel this order?')) await updateDoc(doc(db, ...path('orders', el.dataset.id)), { status: 'CANCELLED' }); },
+  async adv(el) { await wUpd(doc(db, ...path('orders', el.dataset.id)), { status: el.dataset.st, ...(el.dataset.st === 'COMPLETED' ? { completedAt: Date.now() } : {}) }); },
+  async 'cancel-order'(el) { if (confirm('Cancel this order?')) await wUpd(doc(db, ...path('orders', el.dataset.id)), { status: 'CANCELLED' }); },
   'print-order'(el) { const o = orderById(el.dataset.id); if (o) printOrder(o); },
   'collect-pay'(el) { const o = orderById(el.dataset.id); if (o) _activePaymentModal = paymentModal(o); },
   'edit-slip'(el) { const o = orderById(el.dataset.id); if (o) _activePaymentModal = paymentModal(o); },
   async 'pay-save'(el) {
     if (!_activePaymentModal) return;
     const o = _activePaymentModal.currentOrder();
-    await updateDoc(doc(db, ...path('orders', el.dataset.id)), {
+    await wUpd(doc(db, ...path('orders', el.dataset.id)), {
       discount: o.discount, deliveryCharge: o.deliveryCharge, tax: o.tax, serviceCharge: o.serviceCharge, total: o.total,
       paymentMethod: o.paymentMethod, amountReceived: o.amountReceived, changeDue: o.changeDue, paymentStatus: 'PAID'
     });
@@ -616,7 +626,7 @@ const ACTS = {
   async 'pay-print'(el) {
     if (!_activePaymentModal) return;
     const o = _activePaymentModal.currentOrder();
-    await updateDoc(doc(db, ...path('orders', el.dataset.id)), {
+    await wUpd(doc(db, ...path('orders', el.dataset.id)), {
       discount: o.discount, deliveryCharge: o.deliveryCharge, tax: o.tax, serviceCharge: o.serviceCharge, total: o.total,
       paymentMethod: o.paymentMethod, amountReceived: o.amountReceived, changeDue: o.changeDue, paymentStatus: 'PAID'
     });
@@ -651,17 +661,17 @@ const ACTS = {
   async 'cat-save'(el) {
     const name = val('catName').trim(); if (!name) { toast('Enter a name'); return; }
     const ref = el.dataset.id ? doc(db, ...path('categories', el.dataset.id)) : doc(collection(db, ...path('categories')));
-    await setDoc(ref, { name, sortOrder: parseInt(val('catSort')) || 0 }); closeModal(); toast('Category saved');
+    await wSet(ref, { name, sortOrder: parseInt(val('catSort')) || 0 }); closeModal(); toast('Category saved');
   },
   async 'cat-del'(el) {
     if (S.products.some(p => p.categoryId === el.dataset.id) && !confirm('This category still has items. Delete it anyway?')) return;
     if (!confirm('Delete this category?')) return;
-    await deleteDoc(doc(db, ...path('categories', el.dataset.id))); S.menuCat = 'ALL'; closeModal();
+    await wDel(doc(db, ...path('categories', el.dataset.id))); S.menuCat = 'ALL'; closeModal();
   },
   'prod-add'() { productModal(null); },
   'prod-edit'(el) { productModal(S.products.find(p => p.id === el.dataset.id)); },
-  async 'prod-toggle'(el) { const p = S.products.find(x => x.id === el.dataset.id); await updateDoc(doc(db, ...path('products', p.id)), { available: p.available === false }); },
-  async 'prod-del'(el) { const p = S.products.find(x => x.id === el.dataset.id); if (confirm(`Delete "${p.name}"?`)) await deleteDoc(doc(db, ...path('products', p.id))); },
+  async 'prod-toggle'(el) { const p = S.products.find(x => x.id === el.dataset.id); await wUpd(doc(db, ...path('products', p.id)), { available: p.available === false }); },
+  async 'prod-del'(el) { const p = S.products.find(x => x.id === el.dataset.id); if (confirm(`Delete "${p.name}"?`)) await wDel(doc(db, ...path('products', p.id))); },
   async 'prod-save'(el) {
     const name = val('pName').trim(); if (!name) { toast('Enter an item name'); return; }
     const data = {
@@ -671,7 +681,7 @@ const ACTS = {
     };
     const old = S.products.find(p => p.id === el.dataset.id); if (old && old.sku) data.sku = old.sku;
     const ref = el.dataset.id ? doc(db, ...path('products', el.dataset.id)) : doc(collection(db, ...path('products')));
-    await setDoc(ref, data); closeModal(); toast('Item saved');
+    await wSet(ref, data); closeModal(); toast('Item saved');
   },
   'report-preset'(el) { runReport(el.dataset.k); },
   'report-custom'() {
@@ -685,7 +695,7 @@ const ACTS = {
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `orders_${new Date().toISOString().slice(0, 10)}.csv`; a.click();
   },
   async 'save-restaurant'() {
-    await setDoc(doc(db, ...path()), {
+    await wSet(doc(db, ...path()), {
       name: val('sName').trim(), ownerName: val('sOwner').trim(), phone: val('sPhone').trim(), address: val('sAddr').trim(),
       currency: val('sCur').trim() || 'PKR', receiptFooter: val('sFoot').trim(),
       taxPercent: parseFloat(val('sTax')) || 0, serviceChargePercent: parseFloat(val('sSvc')) || 0
@@ -708,7 +718,7 @@ const ACTS = {
         const existing = S.categories.find(c => c.name === name);
         if (existing) { catIds[name] = existing.id; continue; }
         const ref = doc(collection(db, ...path('categories')));
-        await setDoc(ref, { name, sortOrder: sort++ });
+        await wSet(ref, { name, sortOrder: sort++ });
         catIds[name] = ref.id;
       }
       const existingNames = new Set(S.products.map(p => p.name));
@@ -743,7 +753,7 @@ document.addEventListener('click', async e => {
 });
 document.addEventListener('change', async e => {
   if (e.target.classList.contains('pricein')) {
-    try { await updateDoc(doc(db, ...path('products', e.target.dataset.id)), { price: parseFloat(e.target.value) || 0 }); toast('Price updated'); }
+    try { await wUpd(doc(db, ...path('products', e.target.dataset.id)), { price: parseFloat(e.target.value) || 0 }); toast('Price updated'); }
     catch (err) { toast('Error: ' + err.message); }
   }
 });
